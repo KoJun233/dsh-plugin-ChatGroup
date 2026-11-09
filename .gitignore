@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.tsbuildinfo
+*.log
+.local/
+.env
+.env.*
+!.env.example
+a2a.config.json
+story-model.json
+*.pem
+*.key
+.DS_Store
+examples/

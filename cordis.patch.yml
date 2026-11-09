@@ -1,0 +1,4 @@
+- insert:
+    - id: a2a-client
+      name: dsh-a2a
+      config: {}
