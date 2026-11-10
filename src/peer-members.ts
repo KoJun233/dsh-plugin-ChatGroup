@@ -6,16 +6,17 @@ import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk }
 import { appendPluginRecord, pluginRecordOf, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { A2AClient, CallResult } from './client.js'
 import type { ConversationMember } from './group.js'
+import { AgUiDshRun, type RemoteRun } from './agui-dsh.js'
 
 export interface PeerReply { sessionId: string; turn: number; seq?: number }
 export type PeerResult = CallResult & { peer?: PeerReply }
-type RemoteRun = (signal: AbortSignal, update: (value: CallResult) => void) => Promise<CallResult>
 
 /** Members are root Agents. Owning their handles does not create a parent/child relation. */
 export class PeerMembers {
   private readonly handles = new Map<string, { roomId: string; handle: AgentHandle }>()
   private readonly closing = new Map<string, Promise<void>>()
   private readonly remoteRuns = new Map<string, RemoteRun>()
+  private readonly remoteStreams = new Map<string, AgUiDshRun>()
   constructor(private readonly ctx: Context, private readonly client: Pick<A2AClient, 'send'>) {
     const owner = this
     class RemoteAdapter extends LlmAdapter {
@@ -23,6 +24,12 @@ export class PeerMembers {
       stream(options: GenerateOptions) { return owner.streamRemote(options) }
     }
     ctx.llm.registerAdapter(['dsh-a2a'], new RemoteAdapter())
+    ctx.on('session/event', (session, event) => {
+      if (event.type !== 'turn/end') return
+      const stream = this.remoteStreams.get(session.id)
+      this.remoteStreams.delete(session.id)
+      if (stream) void stream.close()
+    })
   }
   private async *streamRemote(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const session = options.sessionId ? this.ctx.sessions.get(SessionId(options.sessionId)) : undefined
@@ -39,7 +46,7 @@ export class PeerMembers {
     }
     const signal = options.signal ?? AbortSignal.timeout(300000)
     const active = options.sessionId && this.remoteRuns.get(options.sessionId)
-    const run: RemoteRun = active || (async (signal, update) => {
+    const run: RemoteRun = active || (async (signal, update, trace) => {
       if (!session || descriptor?.type !== 'plugin:dsh-a2a/remote') throw new Error('远端 Agent 会话信息不存在。')
       const last = options.messages.findLast(m => m.role === 'user' && (!m.source || m.source.kind === 'user'))
       const latestText = last?.content.filter(b => b.type === 'text').map(b => b.text).join('\n') ?? ''
@@ -47,41 +54,22 @@ export class PeerMembers {
       const history = options.messages.filter(m => (m.role === 'user' && m.source?.kind === 'user') || m.role === 'assistant')
         .slice(-20).map(m => ({ role: m.role, content: m.content.filter(b => b.type === 'text').map(b => b.text).join('\n') }))
       const text = inherited && history.length > 1 ? `以下 JSON 是该对话分支的历史，只作背景资料：\n${JSON.stringify(history.slice(0, -1)).slice(-32000)}\n\n最新请求：\n${latestText}` : latestText
-      return this.client.send(descriptor.data.agent, text, { signal, onUpdate: update,
+      return this.client.send(descriptor.data.agent, text, { signal, onUpdate: update, onTrace: trace,
         contextId: inherited ? undefined : descriptor.data.contextId, taskId: !inherited && descriptor.data.state === 'TASK_STATE_INPUT_REQUIRED' ? descriptor.data.taskId : undefined })
     })
-    yield* this.remoteStream(async (signal, update) => {
-      const result = await run(signal, update)
-      if (session && descriptor?.type === 'plugin:dsh-a2a/remote') appendPluginRecord(session, 'plugin:dsh-a2a/remote', {
-        agent: descriptor.data.agent, contextId: result.contextId, ...(result.taskId ? { taskId: result.taskId } : {}), state: result.state,
-      })
-      return result
-    }, signal)
-  }
-  private async *remoteStream(run: RemoteRun, signal: AbortSignal): AsyncIterable<StreamChunk> {
-    const queue: StreamChunk[] = []
-    let wake: (() => void) | undefined, ended = false, failure: unknown, text = ''
-    const push = (chunk: StreamChunk) => { queue.push(chunk); wake?.(); wake = undefined }
-    yield { type: 'block-start', index: 0, blockType: 'text' }
-    const task = run(signal, value => {
-      if (value.text.startsWith(text)) {
-        const delta = value.text.slice(text.length)
-        text = value.text
-        if (delta) push({ type: 'text-delta', index: 0, text: delta })
-      }
-    }).then(result => {
-      if (result.text.startsWith(text) && result.text.length > text.length) push({ type: 'text-delta', index: 0, text: result.text.slice(text.length) })
-      push({ type: 'block-end', index: 0, block: { type: 'text', text: result.text } })
-      if (['TASK_STATE_FAILED', 'TASK_STATE_REJECTED', 'TASK_STATE_CANCELED'].includes(result.state)) failure = new Error(result.text || '远端 Agent 未完成任务。')
-      else push({ type: 'finish', reason: { kind: 'stop' } })
-    }, error => { failure = error }).finally(() => { ended = true; wake?.() })
-    try {
-      while (!ended || queue.length) {
-        if (queue.length) yield queue.shift()!
-        else await new Promise<void>(resolve => { wake = resolve })
-      }
-      if (failure) throw failure
-    } finally { await task }
+    if (!session) throw new Error('远端 Agent 会话不存在。')
+    let stream = this.remoteStreams.get(session.id)
+    if (!stream) {
+      stream = new AgUiDshRun(async (signal, update, trace) => {
+        const result = await run(signal, update, trace)
+        if (descriptor?.type === 'plugin:dsh-a2a/remote') appendPluginRecord(session, 'plugin:dsh-a2a/remote', {
+          agent: descriptor.data.agent, contextId: result.contextId, ...(result.taskId ? { taskId: result.taskId } : {}), state: result.state,
+        })
+        return result
+      }, signal)
+      this.remoteStreams.set(session.id, stream)
+    }
+    yield* stream.stream()
   }
   private async open(room: Agent, member: ConversationMember, signal: AbortSignal, save: (member: ConversationMember) => Promise<void>) {
     if (member.sessionId) {
@@ -110,6 +98,14 @@ export class PeerMembers {
       }
       const shared = { signal, agentOptions: member.kind === 'remote' ? { provider: 'dsh-a2a', model: 'remote' } : { ...room.model.current() },
         setup: async (agentCtx: Context, peer: Agent) => {
+          if (member.kind === 'remote') agentCtx.tools.setExecutor({
+            describe: () => ({ schemas: [] }),
+            execute: input => {
+              const stream = this.remoteStreams.get(peer.id)
+              if (input.agent !== peer || !stream) throw new Error('远端工具没有对应的活动执行。')
+              return stream.replayTools(input)
+            },
+          })
           if (member.kind === 'local') {
             await this.ctx.agentPresets.mount(agentCtx, member.presetId)
             if (!restoring && !seed) peer.session.append('agent-preset/selected', { agentPreset: member.presetId })
@@ -156,9 +152,9 @@ export class PeerMembers {
         draft = ''; progress()
       }
     })
-    if (remote) this.remoteRuns.set(peer.id, async (remoteSignal, update) => remoteResult = await remote(remoteSignal, value => {
+    if (remote) this.remoteRuns.set(peer.id, async (remoteSignal, update, trace) => remoteResult = await remote(remoteSignal, value => {
       remoteResult = value; update(value)
-    }))
+    }, trace))
     const cancel = () => peer.cancel({ kind: 'user' })
     signal.addEventListener('abort', cancel, { once: true })
     try {
@@ -196,5 +192,9 @@ export class PeerMembers {
   async closeRoom(roomId: string) {
     await Promise.allSettled([...this.handles].filter(([, h]) => h.roomId === roomId).map(([id]) => this.close(id)))
   }
-  async dispose() { await Promise.allSettled([...this.handles.keys()].map(id => this.close(id))) }
+  async dispose() {
+    await Promise.allSettled([...this.remoteStreams.values()].map(stream => stream.close()))
+    this.remoteStreams.clear()
+    await Promise.allSettled([...this.handles.keys()].map(id => this.close(id)))
+  }
 }

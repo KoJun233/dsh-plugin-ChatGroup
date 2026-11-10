@@ -2,7 +2,7 @@
 
 把 DSH 原生会话扩展成多 Agent 群聊：保留官方输入框、消息流、执行过程与导航，通过 `@成员` 协调本地 Agent 和远端 A2A Agent。
 
-包名为 `dsh-a2a`，当前版本 **0.8.2**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
+包名为 `dsh-a2a`，当前版本 **0.9.0**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
 
 ## 会话行为
 
@@ -30,19 +30,19 @@ npm run build
 npm pack
 ```
 
-构建生成 `dist/`，打包生成 `dsh-a2a-0.8.2.tgz`；两者均不提交 Git。
+构建生成 `dist/`，打包生成 `dsh-a2a-0.9.0.tgz`；两者均不提交 Git。
 
 macOS DMG 版使用应用自带的 CLI 安装到 `desktop` profile：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add "$PWD/dsh-a2a-0.8.2.tgz"
+  plugin --profile desktop add "$PWD/dsh-a2a-0.9.0.tgz"
 ```
 
 Web 版安装到实际使用的 profile：
 
 ```sh
-dsh plugin --profile web add "$PWD/dsh-a2a-0.8.2.tgz"
+dsh plugin --profile web add "$PWD/dsh-a2a-0.9.0.tgz"
 ```
 
 安装后重新打开 DSH。卸载使用 `dsh plugin --profile desktop remove dsh-a2a`，Web 版将 profile 改为 `web`。
@@ -61,9 +61,8 @@ dsh plugin --profile web add "$PWD/dsh-a2a-0.8.2.tgz"
   "agents": [],
   "nacos": {
     "serverUrl": "http://127.0.0.1:18848/nacos",
-    "namespaceId": "",
-    "groupName": "DSH_A2A",
-    "servicePrefix": "a2a."
+    "namespaceId": "public",
+    "registry": "agent"
   }
 }
 ```
@@ -72,21 +71,30 @@ dsh plugin --profile web add "$PWD/dsh-a2a-0.8.2.tgz"
 
 受保护的 Nacos 使用 `nacos.accessTokenEnv` 指向 token 环境变量；当前不自动登录或续期。静态配置覆盖同名发现记录。凭证仅发往同源端点，禁止带用户名或密码的 URL，不跟随携带凭证的重定向。
 
-Nacos 适配使用 **3.2 Naming HTTP v3**，在实例元数据中保存 `a2aCardUrl`、`a2aRole` 和 `a2aDescription`。不使用 Nacos 原生 AI Agent Registry；两种注册模型需要分别适配。
+默认使用 **Nacos 原生 Agent Registry**（Nacos 3.1+，本地验证 3.2.0）。Agent 显示在「Agent 管理 → Agent 列表」，默认命名空间为 `public`；通过 `/v3/admin/ai/a2a/list` 和 `/v3/admin/ai/a2a` 列表与详情接口发现，不再通过 Naming 服务列表查询。
+
+发布使用官方 **URL** 模式，`url` 保存真正的 A2A 调用地址。Card 持久保留，无需注册进程或 Naming 心跳，停止 Agent 不会自动删除目录条目；本模式不做实例健康检查或动态端点租约。相同命名空间内名称唯一，目录名称需为 1–64 个 ASCII 可见字符。
+
+Nacos 3.2 的 Card 模型使用 `url` / `preferredTransport`，不能完整保存 A2A 1.0 的逐接口信息。插件发布兼容的目录字段并保留真实协议版本及 AG-UI 扩展，通过 `urn:dsh:a2a:registry:v1` 扩展记录 `role` 与原始 `cardUrl`。实际调用读取原始 Card，保留其完整接口和安全声明；源地址可以与本地目录名称不同。凭证和 `tokenEnv` 不写入目录，不覆盖来源地址不同的同名条目。
+
+通过控制台或其他客户端导入、没有上述扩展的 Card，也可直接按 Nacos 返回的 Card 连接。缺少角色分类时按 `personal` 处理，防止业务身份因分类缺失而调用个人助理；供业务身份调用的成员应以 `business` 角色发布。远端仍需独立校验调用者身份。
+
+旧 Naming 方式仅在显式设置 `nacos.registry: "naming"` 时启用，继续支持 `groupName`（默认 `DSH_A2A`）和 `servicePrefix`（默认 `a2a.`）。此模式才使用实例元数据、健康筛选、心跳和退出注销，不与原生目录自动混查。旧条目需重新发布到原生 Agent Registry。
 
 ## 必要脚本
 
-`npm run register:agent` 将已有 A2A 服务注册到 Nacos，持续发送心跳，正常退出时注销。运行前通过环境变量提供：
+`npm run register:agent` 读取已有服务的 Agent Card 并发布到原生 Agent Registry。命令完成后即可退出；重复发布同源条目会更新并选择其默认发布版本。运行前通过环境变量提供：
 
 | 环境变量 | 用途 |
 |---|---|
 | `NACOS_URL` | Nacos API 地址，必填 |
-| `A2A_AGENT_NAME` | 服务名称，必填 |
+| `A2A_AGENT_NAME` | Agent 目录名称，必填 |
 | `A2A_AGENT_CARD_URL` | 已有服务的 Agent Card 地址，必填 |
 | `A2A_AGENT_ROLE` | `personal` 或 `business`，默认 `business` |
 | `A2A_AGENT_DESCRIPTION` | 成员职责说明，可选 |
-| `NACOS_NAMESPACE_ID` / `NACOS_GROUP_NAME` | namespace 与服务分组，可选 |
-| `NACOS_SERVICE_PREFIX` | 服务名前缀，可选 |
+| `NACOS_NAMESPACE_ID` | 命名空间，原生模式默认 `public` |
+| `NACOS_REGISTRY` | `agent`（默认）或旧 `naming` 模式 |
+| `NACOS_GROUP_NAME` / `NACOS_SERVICE_PREFIX` | 仅 Naming 模式使用的分组和前缀 |
 | `NACOS_ACCESS_TOKEN` | Nacos 访问 token，可选，仅通过本机环境提供 |
 
 `npm run smoke` 验证原生工具、Agent 发现及 A2A 调用。通过 `DSH_A2A_CONFIG` 指定本机配置，设置 `A2A_AGENT_NAME` 和 `A2A_MESSAGE` 后执行。脚本只报告完成状态和回复长度，不打印回复正文；这会实际调用指定服务。
@@ -104,9 +112,19 @@ docker compose up -d --wait nacos
 
 使用官方 `@a2a-js/sdk`，支持 JSON-RPC 的 A2A **1.0 / 0.3**。声明 streaming 能力的服务默认通过 SSE 返回，其他服务使用轮询；保留任务状态、contextId、取消与待补充输入的处理。
 
-`dsh-a2a/server` 是可选入站插件，默认客户端包配置不会启用它。在自己的 Cordis 配置中显式启用时，需要设置 `publicUrl`、已有模型路由，以及通过 `tokenEnv` 绑定可信身份的 `principals`。`allowedTools` 默认空；可通过 `registryConfigFile` 注册到 Nacos。每个入站任务使用独立会话，结束后释放。
+`dsh-a2a/server` 是可选入站插件，默认客户端包配置不会启用它。在自己的 Cordis 配置中显式启用时，需要设置 `publicUrl`、已有模型路由，以及通过 `tokenEnv` 绑定可信身份的 `principals`。`allowedTools` 默认空；可通过 `registryConfigFile` 将 Card 发布到 Nacos。每个入站任务使用独立会话，结束后释放。
 
 个人身份可调用个人或业务 Agent；业务身份不能主动调用个人 Agent。Nacos 负责发现，不提供 NAT 穿透；跨网络连接仍需已有网络通道。
+
+## 远端 AG-UI 转换与原生展示
+
+远端 Agent Card 声明 `urn:raycloud:a2a:ag-ui:v1` 时，会话适配器通过 `A2A-Extensions` 请求该扩展，从 `ag-ui.events` 产物的 `parts[].data` 提取事件。扩展 metadata 必须包含 `schemaVersion: 1`、`runId`、`threadId` 和从 1 开始递增的 `sequence`。这是本项目的 A2A 扩展绑定；其他 A2A 服务需要实现相同约定。事件体使用 `@ag-ui/core@1.0.4` 官方 schema 校验，Task 快照和轮询中的已读事件按序号去重。缺失首帧、序号断档、标识冲突及流截断会报告错误。未声明或未实际返回该扩展的服务继续按普通 A2A 正文显示。
+
+转换器仅接收数据，不创建新消息卡片。`TEXT_MESSAGE_*` 转为原生正文流，`REASONING_MESSAGE_*` 转为原生思考块，`TOOL_CALL_START/ARGS/END/RESULT` 转为原生工具调用和结果记录。工具参数结束不代表执行结束，界面会等待真实结果；一次远端 HTTP 执行可以形成多个原生模型步骤，并保留在该成员自己的会话中，供官方对话组件与轨迹组件实时显示和历史重放。主 Agent @成员与用户直接 @成员使用相同转换路径。
+
+远端会话使用独立的工具记录消费者，工具名显示为 `a2a.<远端工具名>`。消费者只匹配本次远端声明的调用并记录远端结果，不进入本地工具查找、授权或执行流程，也不会因工具同名而使用本地工具的专用渲染。真正的业务工具及权限由远端服务管理。AG-UI 正文已经用于显示时，A2A 的 `conversation_result` 仅作为兼容结果，不再输出第二份正文。
+
+首版转换上述显式 start/content/end 生命周期事件。状态快照、自定义事件、activity、嵌套子 Agent 及加密推理暂不映射；chunk 简写事件需要服务端展开为对应生命周期事件。工具结果中的非文本结构按 JSON 文本保留，不自动加载媒体。未提供的 token 用量不补造。远端取消能否真正停止执行仍取决于服务端的 `CancelTask` 实现。
 
 ## 开发与凭证
 

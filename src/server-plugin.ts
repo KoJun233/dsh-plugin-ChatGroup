@@ -76,7 +76,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const deregister = await new NacosRegistry(nacos).register({
       name: config.name, role: config.role, description: config.description,
       cardUrl: `${new URL(config.publicUrl).origin}/.well-known/agent-card.json`,
-    })
+    }, server.card)
     try { ctx.effect(() => deregister) } catch (error) { await deregister(); throw error }
   }
 }

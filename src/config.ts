@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { z } from 'zod'
+import type { AgentCard } from '@a2a-js/sdk'
 
 export type AgentRole = 'personal' | 'business'
 export interface AgentEntry {
@@ -9,9 +10,12 @@ export interface AgentEntry {
   description?: string
   cardUrl: string
   tokenEnv?: string
+  /** In-memory Card returned by native Agent Registry, never a credential. */
+  registryCard?: AgentCard
 }
 export interface NacosConfig {
   serverUrl: string
+  registry?: 'agent' | 'naming'
   namespaceId?: string
   groupName?: string
   servicePrefix?: string
@@ -35,7 +39,8 @@ export const FileConfig = z.object({
     description: z.string().optional(), cardUrl: z.string(), tokenEnv: z.string().optional(),
   })).default([]),
   nacos: z.object({
-    serverUrl: z.string(), namespaceId: z.string().default(''),
+    serverUrl: z.string(), registry: z.enum(['agent', 'naming']).default('agent'),
+    namespaceId: z.string().default('public'),
     groupName: z.string().default('DSH_A2A'),
     servicePrefix: z.string().default('a2a.'), accessTokenEnv: z.string().optional(),
   }).optional(),

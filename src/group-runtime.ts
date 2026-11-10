@@ -275,8 +275,10 @@ export class GroupRuntime {
       try {
         const result = await this.peers.ask(agent, member, text, signal, onUpdate, async updated => {
           room.updateMember(updated); await this.ctx.sessions.flush(agent.session)
-        }, member.kind === 'remote' ? (remoteSignal, update) => this.client.send(member.remoteName, prompt,
-          { ...options, signal: remoteSignal, contextId, taskId, onUpdate: update }) : undefined)
+        }, member.kind === 'remote' ? (remoteSignal, update, trace) => this.client.send(member.remoteName, prompt,
+          { ...options, signal: remoteSignal, contextId, taskId, onUpdate: update,
+            onTrace: record => { options.onTrace?.(record); trace?.(record) },
+          }) : undefined)
         latest = result
         publish(isSuccess(result) ? 'completed' : needsInput(result) ? 'input-required' : result.state === 'TASK_STATE_CANCELED' ? 'canceled' : 'failed')
         return { ...result, memberReply: true, continueMain: options.answerMode === 'collect' || Boolean(order && !order.signal.aborted && order.next < order.members.length) }
