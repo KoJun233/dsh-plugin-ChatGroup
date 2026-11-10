@@ -81,6 +81,10 @@ export class NacosRegistry {
         const role = meta?.role === 'business' ? 'business' : 'personal'
         const cardUrl = httpUrl(source ?? endpoint.url).href
         entries.push({ name: item.name, role, cardUrl, description: card.description,
+          registryInfo: { version: card.version, streaming: card.capabilities?.streaming ?? false,
+            interfaces: card.supportedInterfaces.map(({ url, protocolBinding, protocolVersion }) => ({ url, protocolBinding, protocolVersion })),
+            skills: card.skills.map(({ id, name, description, tags }) => ({ id, name, description, tags })),
+          },
           ...(source ? {} : { registryCard: card }),
         })
       }

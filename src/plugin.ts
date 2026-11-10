@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
 import { A2AClient } from './client.js'
-import { loadConfig } from './config.js'
+import { parseConfig } from './config.js'
+import { RegistryRpc, RegistrySettings } from './registry-settings.js'
 import { progressWriter } from './progress.js'
 import { GroupRpc, GroupRuntime, type GroupContext } from './group-runtime.js'
 import { isSuccess, needsInput } from './group.js'
@@ -23,7 +24,10 @@ const output = {
 }
 
 export async function apply(ctx: Context, options: Config): Promise<void> {
-  const client = new A2AClient(await loadConfig(options.configFile))
+  const client = new A2AClient(parseConfig({}))
+  const registry = new RegistrySettings(options.configFile, client)
+  await registry.configuration()
+  ctx.inject(['typert', 'typertGateway'], scope => { new RegistryRpc(scope as ConstructorParameters<typeof RegistryRpc>[0], registry) })
   let group: GroupRuntime | undefined
   ctx.inject(['agents', 'llm', 'typert', 'typertGateway', 'sessionController', 'systemPrompt', 'agentPresets', 'sessions', 'workingDirectory'], scope => {
     const runtime = new GroupRuntime(scope, client)

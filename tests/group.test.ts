@@ -38,6 +38,27 @@ function runtimeFixture(send: (name: string, text: string, options?: SendOptions
   return { ctx, agent, runtime, async dispose() { await runtime.dispose(); await ctx.fiber.dispose() } }
 }
 
+test('conversation candidates exclude shipped presets while preserving custom presets and existing members', async () => {
+  const f = runtimeFixture(async name => answer(name, 'ok'))
+  Object.assign(f.ctx.agentPresets, { list: async () => [
+    ...['standard', 'ptc', 'minimal', 'cordis'].map(id => ({ id })),
+    { id: 'story', name: '故事生成助手' }, { id: 'english', name: 'English Practice' },
+    { id: 'custom', broken: 'invalid' },
+  ] })
+  try {
+    f.runtime.room(f.agent.session).add({ id: 'local:standard', name: 'standard', description: '', kind: 'local', presetId: 'standard' })
+    const state = await f.runtime.state(f.agent)
+    assert.deepEqual(state.agents.map(a => a.id), ['local:story', 'local:english', 'local:custom'])
+    assert.equal(state.agents[2].unavailable, '此预设暂不可用')
+    assert.ok(state.members.some(m => m.id === 'local:standard'), 'filtering candidates preserves previously joined members')
+    await assert.rejects(f.runtime.add(f.agent, { kind: 'local', id: 'local:ptc' }), /暂不可用/)
+    await f.runtime.add(f.agent, { kind: 'local', id: 'local:english' })
+    assert.ok(f.runtime.room(f.agent.session).members.some(m => m.id === 'local:english'))
+    Object.assign(f.ctx.agentPresets, { list: async () => [{ id: 'standard', name: 'Custom standard' }] })
+    assert.equal((await f.runtime.state(f.agent)).agents[0].name, 'Custom standard')
+  } finally { await f.dispose() }
+})
+
 test('any-position mentions route directly, preserve native references and keep multi-member order', () => {
   assert.deepEqual(routeMemberMessage('帮我@故事助手写一个故事', members), { kind: 'direct', member: 'story-assistant', text: '帮我写一个故事' })
   assert.deepEqual(routeMemberMessage('写故事吧，@故事助手', members), { kind: 'direct', member: 'story-assistant', text: '写故事吧，' })

@@ -2,11 +2,11 @@
 
 把 DSH 原生会话扩展成多 Agent 群聊：保留官方输入框、消息流、执行过程与导航，通过 `@成员` 协调本地 Agent 和远端 A2A Agent。
 
-包名为 `dsh-a2a`，当前版本 **0.9.0**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
+包名为 `dsh-a2a`，当前版本 **0.10.1**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
 
 ## 会话行为
 
-- 点击会话右上角 **⋯ → 会话设置**，在原生右侧栏添加已有本地 Agent 预设或远端 A2A 成员。
+- 点击会话右上角 **⋯ → 会话设置**，在原生右侧栏添加自定义本地 Agent 预设或远端 A2A 成员。内容超出高度时可滚动；内置的 standard、ptc、minimal、cordis 不出现在添加列表，已加入的成员保留。
 - 没有 `@` 的消息交给当前会话原本的主 Agent；主 Agent 沿用其模型、提示词、工具和权限，按成员专长决定自己处理或发出 `@成员 具体任务`。
 - 用户在消息任意位置 `@` 一个成员时直接转接；多个成员由主 Agent 按出现顺序协调。未加入会话的可发现成员会提示先添加。
 - 成员成功后直接答复，主 Agent 不重复转述；失败或需要汇总时由主 Agent 接回。下一条未 `@` 的消息仍交给主 Agent。
@@ -30,22 +30,33 @@ npm run build
 npm pack
 ```
 
-构建生成 `dist/`，打包生成 `dsh-a2a-0.9.0.tgz`；两者均不提交 Git。
+构建生成 `dist/`，打包生成 `dsh-a2a-0.10.1.tgz`；两者均不提交 Git。
 
 macOS DMG 版使用应用自带的 CLI 安装到 `desktop` profile：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add "$PWD/dsh-a2a-0.9.0.tgz"
+  plugin --profile desktop add "$PWD/dsh-a2a-0.10.1.tgz"
 ```
 
 Web 版安装到实际使用的 profile：
 
 ```sh
-dsh plugin --profile web add "$PWD/dsh-a2a-0.9.0.tgz"
+dsh plugin --profile web add "$PWD/dsh-a2a-0.10.1.tgz"
 ```
 
 安装后重新打开 DSH。卸载使用 `dsh plugin --profile desktop remove dsh-a2a`，Web 版将 profile 改为 `web`。
+
+## A2A 配置页面
+
+打开左下角 **更多 → 设置 → A2A 配置**，入口与通用设置、模型、Agent 预设同级，不依赖当前选中的会话。
+
+- 启用 Nacos 后，可配置服务地址（包含部署的上下文路径，如 `/nacos`）、命名空间 ID、注册模式和访问令牌环境变量名。默认使用原生 Agent Registry；兼容 Naming 时还可配置服务分组及服务名前缀。
+- **测试连接**使用当前表单预览注册中心，不保存配置，也不改变会话发现源。列表支持搜索、刷新和展开信息，显示可发现 Agent 的名称、描述、角色、版本、Card / 来源地址、接口、流式能力及技能；Naming 模式展示基础信息。
+- **保存配置**写入当前插件使用的 `a2a.config.json`，立即更新发现源，无需重启。页面底部显示实际文件路径；首次使用没有配置文件时，也可从此页创建。
+- 保存保留静态 Agent、调用角色、超时等其他配置。配置被其他窗口或外部文件修改时，需要重新加载后再保存。
+- Token 从宿主进程环境读取，页面只填写环境变量名；清空后可移除该鉴权配置。
+- 注册中心中的 Agent 仍需在各会话设置中显式添加。关闭 Nacos 后，配置文件中直接添加的远端 Agent 仍可使用。
 
 ## 连接配置
 

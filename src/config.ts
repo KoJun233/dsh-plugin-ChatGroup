@@ -12,6 +12,13 @@ export interface AgentEntry {
   tokenEnv?: string
   /** In-memory Card returned by native Agent Registry, never a credential. */
   registryCard?: AgentCard
+  /** Display-only registry metadata; calls still resolve the original source Card. */
+  registryInfo?: {
+    version: string
+    streaming: boolean
+    interfaces: { url: string; protocolBinding: string; protocolVersion: string }[]
+    skills: { id: string; name: string; description: string; tags: string[] }[]
+  }
 }
 export interface NacosConfig {
   serverUrl: string
@@ -56,9 +63,13 @@ export function httpUrl(value: string): URL {
 
 export async function loadConfig(path: string): Promise<A2AConfig> {
   const value: unknown = JSON.parse(await readFile(resolve(path), 'utf8'))
-  const result = await FileConfig['~standard'].validate(value)
-  if (result.issues) throw new Error(`Invalid A2A configuration: ${JSON.stringify(result.issues)}`)
-  const config = result.value as A2AConfig
+  return parseConfig(value)
+}
+
+export function parseConfig(value: unknown): A2AConfig {
+  const result = FileConfig.safeParse(value)
+  if (!result.success) throw new Error(`Invalid A2A configuration: ${JSON.stringify(result.error.issues)}`)
+  const config = result.data as A2AConfig
   const names = new Set<string>()
   for (const agent of config.agents) {
     httpUrl(agent.cardUrl)

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import { isBuiltInPreset } from '@deepseek-ai/dsh-agent-preset-registry/display'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { createUserMessage, isAgentLoopRequest, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, SessionId, type Session } from '@deepseek-ai/dsh-session'
@@ -120,7 +121,7 @@ export class GroupRuntime {
     const [remotes, presets] = await Promise.allSettled([this.client.list(signal), this.ctx.agentPresets.list()])
     const agents: (ConversationMember & { unavailable?: string })[] = []
     if (remotes.status === 'fulfilled') for (const a of remotes.value) agents.push({ id: a.name, name: agentLabel(a.name), kind: 'remote', remoteName: a.name, description: a.description ?? '' })
-    if (presets.status === 'fulfilled') for (const a of presets.value) agents.push({ id: `local:${a.id}`, name: a.name || a.id, kind: 'local', presetId: a.id, description: a.description ?? '', ...(a.broken ? { unavailable: '此预设暂不可用' } : {}) })
+    if (presets.status === 'fulfilled') for (const a of presets.value.filter(a => !isBuiltInPreset(a))) agents.push({ id: `local:${a.id}`, name: a.name || a.id, kind: 'local', presetId: a.id, description: a.description ?? '', ...(a.broken ? { unavailable: '此预设暂不可用' } : {}) })
     return { agents, discoveryError: remotes.status === 'rejected' ? '远端成员发现暂不可用，可刷新重试。' : presets.status === 'rejected' ? '本地 Agent 预设暂不可用，可刷新重试。' : '' }
   }
   async state(agent: Agent, signal?: AbortSignal) {

@@ -48,17 +48,23 @@ function pending(task: Task): boolean {
 }
 
 export class A2AClient {
-  readonly nacos?: NacosRegistry
-  constructor(readonly config: A2AConfig) {
+  nacos?: NacosRegistry
+  constructor(public config: A2AConfig) {
+    this.nacos = config.nacos ? new NacosRegistry(config.nacos) : undefined
+  }
+
+  reconfigure(config: A2AConfig): void {
+    this.config = config
     this.nacos = config.nacos ? new NacosRegistry(config.nacos) : undefined
   }
 
   async list(signal?: AbortSignal): Promise<AgentEntry[]> {
+    const { config, nacos } = this
     const entries = new Map<string, AgentEntry>()
-    if (this.nacos) for (const agent of await this.nacos.list(signal)) entries.set(agent.name, agent)
+    if (nacos) for (const agent of await nacos.list(signal)) entries.set(agent.name, agent)
     // Explicit entries override discovered records, including credentials.
-    for (const agent of this.config.agents) entries.set(agent.name, agent)
-    return [...entries.values()].filter(agent => canCall(this.config.role, agent.role))
+    for (const agent of config.agents) entries.set(agent.name, agent)
+    return [...entries.values()].filter(agent => canCall(config.role, agent.role))
   }
 
   async connect(name: string, signal?: AbortSignal) {

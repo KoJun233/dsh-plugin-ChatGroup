@@ -1,10 +1,12 @@
 import { groupClient } from './group-ui.js'
+import { registryClient } from './registry-ui.js'
 import css from './group-ui.css'
 
 window.__ModuleLoader__.load({
   id: 'dsh-a2a',
   factory: require => {
     const group = groupClient(require)
+    const registry = registryClient(require)
     const { createElement: h } = require('react')
     function ToolStatus({ block, phase }) {
       let result
@@ -19,6 +21,7 @@ window.__ModuleLoader__.load({
         style.textContent = css
         ctx.effect(() => { document.head.append(style); return () => style.remove() })
         for (const name of ['session_call_agent', 'a2a_send_message']) ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({ name: 'tool.call.toolview', key: name }, ToolStatus))
+        await registry.apply(ctx)
         await group.apply(ctx)
       },
     }
