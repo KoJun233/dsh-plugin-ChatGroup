@@ -4,10 +4,12 @@ import { nativeUi } from './native-ui.js'
 import { registerGroupTrajectory } from './group-trajectory-ui.js'
 
 export function groupClient(require) {
-  const { createElement: h, useState, useEffect, useLayoutEffect, useRef, useMemo } = require('react')
+  const { createElement: h, createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useMemo } = require('react')
   const { Button, MenuItemButton } = require('@deepseek-ai/dsh-client-ui-primitives')
   const { Markdown } = nativeUi(require)
   const target = 'dsh-a2a-members'
+  // A peer may have its own roster; embedded steps keep the outer member's identity.
+  const MemberReplyContext = createContext(false)
   const definition = { id: 'dsh-a2a/session-settings', kind: 'dsh-a2a-session-settings', title: () => '会话设置' }
   const read = event => event.type === 'plugin:dsh-a2a/group' && event.data && typeof event.data.id === 'string' && Number.isSafeInteger(event.data.revision) ? event.data : null
   const memberEvents = {
@@ -105,8 +107,8 @@ export function groupClient(require) {
     }, [peerId])
     return h(SignedReply, { name, kind: 'member', className: 'a2am-answer', 'data-member-answer': message.id, 'data-state': message.state,
       'data-peer-session': peerId, 'data-peer-turn': peer?.turn },
-      ready?.sessionId === peerId && peerId ? h(SessionProvider, { session: ready },
-        renderSlot(peerSlot, { requestedTurn: peer?.turn, legacyTime: message.createdAt, legacyText: message.text })) : h('div', { 'data-native-markdown': true },
+      ready?.sessionId === peerId && peerId ? h(MemberReplyContext.Provider, { value: true }, h(SessionProvider, { session: ready },
+        renderSlot(peerSlot, { requestedTurn: peer?.turn, legacyTime: message.createdAt, legacyText: message.text }))) : h('div', { 'data-native-markdown': true },
         message.text ? h(Markdown, { text: message.text, streaming: message.state === 'working' })
           : h('span', { className: 'a2am-muted', role: 'status' }, message.state === 'working' ? '正在连接…' : message.state === 'canceled' ? '任务已停止。' : '未收到文字回复。')),
       !peer && !ready && message.text && message.state !== 'working' ? h(Button, { size: 'sm', onClick: () => navigator.clipboard.writeText(message.text), 'aria-label': '复制历史回复' }, '复制') : null,
@@ -322,6 +324,7 @@ export function groupClient(require) {
               if (!original) continue
               installed.add(key)
               const decorate = (Original, props) => {
+                const insideMemberReply = useContext(MemberReplyContext)
                 const roster = props.useA2aMembers(value => value)
                 const members = roster?.knownMembers ?? roster?.members ?? []
                 if (key === 'turn-process') {
@@ -329,7 +332,7 @@ export function groupClient(require) {
                   // control turn has no answer duration to show in the chat.
                   const routingOnly = props.useChat(snapshot => {
                     const nodes = snapshot.locations.getTurn(props.node.data.turn).map(key => snapshot.nodes.get(key)).filter(Boolean)
-                    if (!members.length || nodes.some(node => node.kind === 'assistant-step' && node.data.blocks.some(block => block.kind === 'text' ? block.text.trim() : true))) return false
+                    if (insideMemberReply || !members.length || nodes.some(node => node.kind === 'assistant-step' && node.data.blocks.some(block => block.kind === 'text' ? block.text.trim() : true))) return false
                     const text = nodes.filter(node => node.kind === 'user').flatMap(node => node.data.content.filter(block => block.type === 'text').map(block => block.text)).join('\n')
                     return new Set(memberMentions(text, members).map(mention => mention.member.id)).size === 1
                   })
@@ -339,7 +342,7 @@ export function groupClient(require) {
                   const visible = props.groupPart !== 'reasoning' && props.node.data.blocks?.some(block =>
                     block.kind === 'text' ? block.text?.trim() : block.kind !== 'reasoning' && block.kind !== 'tool-call')
                   const content = h(Original, props)
-                  return members.length && visible ? h(SignedReply, { name: '顾问', kind: 'main' }, content) : content
+                  return !insideMemberReply && members.length && visible ? h(SignedReply, { name: '顾问', kind: 'main' }, content) : content
                 }
                 return h(Original, { ...props, renderFactorySlot: (name, owner, options) => props.renderFactorySlot(name,
                   name === 'conversation.chat.user.content' ? { ...owner, facts: { ...owner.facts, a2aMembers: members } } : owner, options) })

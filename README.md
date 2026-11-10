@@ -2,7 +2,7 @@
 
 把 DSH 原生会话扩展成多 Agent 群聊：保留官方输入框、消息流、执行过程与导航，通过 `@成员` 协调本地 Agent 和远端 A2A Agent。
 
-包名为 `dsh-a2a`，当前版本 **0.10.2**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
+包名为 `dsh-a2a`，当前版本 **0.10.3**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
 
 ## 会话行为
 
@@ -12,7 +12,7 @@
 - 成员成功后直接答复，顾问不重复转述；失败或需要汇总时由顾问接回。下一条未 `@` 的消息仍交给顾问。
 - 本地和远端成员均拥有独立的原生根会话，与顾问同级。成员获得本次任务及自己的既往上下文，不自动获得整个群的历史。
 - 署名、正文、复制、反馈、分支、用量、用时和停止操作复用原生消息流；轨迹关联成员自身的执行记录，隐藏重复转接输入与初始化记录，完整请求仍可在详情查看。
-- 回复署名使用轻量圆角标签与图标，顾问与成员分别标识；宽窗口显示在左侧，窄窗口移至正文上方。长名称显示省略号，悬停可查看全称，并适配明暗主题。
+- 回复署名使用轻量圆角标签与图标，顾问与成员分别标识；宽窗口显示在左侧，窄窗口移至正文上方。长名称显示省略号，悬停可查看全称，并适配明暗主题。成员历史回复始终沿用外层成员署名，即使成员会话配置了自己的成员，也不会在内部重复标成顾问。
 - 转接通过官方事件钩子与插槽完成，不修改官方源码或应用包，不生成 `session_call_agent` 等转接工具调用。
 
 轨迹署名和部分界面适配依赖原生组件结构，升级 DSH 后需要做兼容回归。
@@ -31,19 +31,19 @@ npm run build
 npm pack
 ```
 
-构建生成 `dist/`，打包生成 `dsh-a2a-0.10.2.tgz`；两者均不提交 Git。
+构建生成 `dist/`，打包生成 `dsh-a2a-0.10.3.tgz`；两者均不提交 Git。
 
 macOS DMG 版使用应用自带的 CLI 安装到 `desktop` profile：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add "$PWD/dsh-a2a-0.10.2.tgz"
+  plugin --profile desktop add "$PWD/dsh-a2a-0.10.3.tgz"
 ```
 
 Web 版安装到实际使用的 profile：
 
 ```sh
-dsh plugin --profile web add "$PWD/dsh-a2a-0.10.2.tgz"
+dsh plugin --profile web add "$PWD/dsh-a2a-0.10.3.tgz"
 ```
 
 安装后重新打开 DSH。卸载使用 `dsh plugin --profile desktop remove dsh-a2a`，Web 版将 profile 改为 `web`。
