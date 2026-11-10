@@ -27,7 +27,7 @@ test('trajectory merges delegated and direct peers into their originating room t
   ])
   assert.equal(result.inspection.eventNodes.some(node => node.blocks.length === 0), false)
   assert.equal(new Set(result.inspection.eventNodes.map(node => node.seq)).size, 5)
-  assert.deepEqual(result.inspection.eventNodes.map(node => result.authors.get(node.seq)), ['主 Agent', 'story助手', '主 Agent', 'story助手', 'english助手'])
+  assert.deepEqual(result.inspection.eventNodes.map(node => result.authors.get(node.seq)), ['顾问', 'story助手', '顾问', 'story助手', 'english助手'])
   assert.equal(story.eventNodes[0].turn, 1, 'peer records are not rewritten')
   assert.equal(main.eventNodes[2].blocks.length, 0, 'historical main records are not rewritten')
 })

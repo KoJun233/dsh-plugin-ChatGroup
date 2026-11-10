@@ -89,7 +89,7 @@ export function mergeGroupTrajectory(sessionId: string, main: TrajectoryInspecti
   for (const item of [...mainNodes, ...main.requests]) if (typeof item.turn === 'number' && typeof item.step === 'number' && !emptySteps.has(`${item.turn}:${item.step}`)) {
     steps.set(item.turn, Math.max(steps.get(item.turn) ?? 0, item.step))
   }
-  source(sessionId, '主 Agent', seq => seq * SEQ_RANGE, turn => turn, (_turn, step) => step).append({ ...main, eventNodes: mainNodes,
+  source(sessionId, '顾问', seq => seq * SEQ_RANGE, turn => turn, (_turn, step) => step).append({ ...main, eventNodes: mainNodes,
     requests: main.requests.filter(request => !emptySteps.has(`${request.turn}:${request.step}`)) })
   const seen = new Set<string>()
   for (const transfer of ordered) {

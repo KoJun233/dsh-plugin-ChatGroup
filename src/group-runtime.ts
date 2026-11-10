@@ -222,7 +222,7 @@ export class GroupRuntime {
       }
     } catch (error) {
       signal.throwIfAborted()
-      this.continueMain(agent, member, '转接未完成，请由主 Agent 接回；不要无条件重试。', { error: error instanceof Error ? error.message : String(error) })
+      this.continueMain(agent, member, '转接未完成，请由顾问接回；不要无条件重试。', { error: error instanceof Error ? error.message : String(error) })
     }
   }
   private continueMain(agent: Agent, member: string, instruction: string, data: unknown) {
@@ -260,7 +260,7 @@ export class GroupRuntime {
       const prompt = member.kind === 'remote' ? room.memberPrompt(member.id, text) : text
       const contextId = room.contextId(member.id)
       const taskId = room.pendingTaskId(member.id)
-      room.message('dispatch', '主 Agent', text, { recipient: member.id, callId: options.callId })
+      room.message('dispatch', '顾问', text, { recipient: member.id, callId: options.callId })
       let message = room.message('member', member.id, '', { state: 'working', callId: options.callId, authorName: member.name })
       let latest: CallResult | undefined
       let timer: ReturnType<typeof setTimeout> | undefined

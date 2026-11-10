@@ -41,6 +41,11 @@ export function groupClient(require) {
     return { empty: null, replace: ({ nodes }) => current = latest(null, nodes), apply: ({ upserts }) => current = latest(current, upserts) }
   } }
 
+  const adviserIcon = h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'currentColor' },
+    h('path', { d: 'M6 2.5 7.7 6.8 12 8.5 7.7 10.2 6 14.5 4.3 10.2 0 8.5 4.3 6.8Z M12.5 0 13.4 2.6 16 3.5 13.4 4.4 12.5 7 11.6 4.4 9 3.5 11.6 2.6Z' }))
+  const memberIcon = h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    h('circle', { cx: 8, cy: 4, r: 2.5 }), h('path', { d: 'M3 14v-1.5a5 5 0 0 1 10 0V14' }))
+
   function SignedReply({ name, kind, children, ...attributes }) {
     const root = useRef(null)
     const [gutter, setGutter] = useState(false)
@@ -48,7 +53,7 @@ export function groupClient(require) {
       const element = root.current
       const scroll = element?.closest('[data-conversation-scroll]')
       if (!scroll) return
-      const measure = () => setGutter(element.getBoundingClientRect().left - scroll.getBoundingClientRect().left >= 128)
+      const measure = () => setGutter(element.getBoundingClientRect().left - scroll.getBoundingClientRect().left >= 144)
       measure()
       const observer = new ResizeObserver(measure)
       observer.observe(scroll)
@@ -57,8 +62,9 @@ export function groupClient(require) {
     }, [])
     return h('article', { ...attributes, ref: root, className: `a2am-signed ${attributes.className ?? ''}`, 'data-speaker': kind, 'data-gutter': gutter || undefined },
       h('div', { className: 'a2am-author', 'aria-label': `回复者：${name}` },
-        h('span', { className: 'a2am-avatar', 'aria-hidden': true }, kind === 'main' ? '主' : [...name][0]),
-        h('span', { className: 'a2am-speaker-name' }, name)),
+        h('span', { className: 'a2am-speaker-badge', title: name },
+          h('span', { className: 'a2am-avatar', 'aria-hidden': true }, kind === 'main' ? adviserIcon : memberIcon),
+          h('span', { className: 'a2am-speaker-name' }, name))),
       h('div', { className: 'a2am-reply-body' }, children))
   }
 
@@ -161,7 +167,7 @@ export function groupClient(require) {
     }
     const candidates = state?.agents?.filter(a => !members.some(m => m.id === a.id) && (!query || `${a.name} ${a.description}`.toLowerCase().includes(query.toLowerCase()))) ?? []
     return h('section', { className: 'a2am-settings', 'data-session-members': sessionId },
-      h('div', { className: 'a2am-section-title' }, '主 Agent'),
+      h('div', { className: 'a2am-section-title' }, '顾问'),
       h('div', { className: 'a2am-main-agent' }, h('strong', null, '当前会话 Agent'), h('p', { className: 'a2am-muted' }, '未 @成员 的消息由它回答或协调。')),
       h('div', { className: 'a2am-section-heading' }, h('span', { className: 'a2am-section-title' }, `会话成员${members.length ? ` · ${members.length}` : ''}`),
         h(Button, { size: 'sm', disabled: !state || busy, onClick: () => setAdding(value => !value), 'aria-expanded': adding }, adding ? '完成' : '添加 Agent')),
@@ -333,7 +339,7 @@ export function groupClient(require) {
                   const visible = props.groupPart !== 'reasoning' && props.node.data.blocks?.some(block =>
                     block.kind === 'text' ? block.text?.trim() : block.kind !== 'reasoning' && block.kind !== 'tool-call')
                   const content = h(Original, props)
-                  return members.length && visible ? h(SignedReply, { name: '主 Agent', kind: 'main' }, content) : content
+                  return members.length && visible ? h(SignedReply, { name: '顾问', kind: 'main' }, content) : content
                 }
                 return h(Original, { ...props, renderFactorySlot: (name, owner, options) => props.renderFactorySlot(name,
                   name === 'conversation.chat.user.content' ? { ...owner, facts: { ...owner.facts, a2aMembers: members } } : owner, options) })

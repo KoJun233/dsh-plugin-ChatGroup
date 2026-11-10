@@ -169,7 +169,7 @@ export class PeerMembers {
       const end = events.findLast(e => e.type === 'turn/end')
       const completed = end?.type === 'turn/end' && end.data.reason.kind === 'completed'
       return { agent: member.id, contextId: peer.id, state: completed && output.trim() ? 'TASK_STATE_COMPLETED' : 'TASK_STATE_FAILED',
-        text: output || '成员未完成回复，请由主 Agent 接回处理。', ...remoteResult,
+        text: output || '成员未完成回复，请由顾问接回处理。', ...remoteResult,
         ...(turn === undefined ? {} : { peer: { sessionId: peer.id, turn, seq } }) }
     } finally {
       this.remoteRuns.delete(peer.id)

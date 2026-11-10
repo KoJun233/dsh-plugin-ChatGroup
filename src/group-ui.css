@@ -49,10 +49,13 @@
 .a2am-error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
 .a2am-answer { min-width: 0; padding: 8px 0; color: var(--dsw-alias-label-primary); font-size: var(--dsh-content-font-size, 14px); line-height: calc(24px + var(--dsh-content-font-delta, 0px)); overflow-wrap: anywhere; }
 .a2am-signed { position: relative; min-width: 0; margin: 12px 0; }
-.a2am-author { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; font-weight: 500; }
-.a2am-avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 7px; background: var(--dsw-alias-interactive-bg-hover-solid); font-size: 11px; }
-.a2am-speaker-name { overflow-wrap: anywhere; }
-.a2am-signed[data-gutter] > .a2am-author { position: absolute; top: 2px; right: calc(100% + 20px); width: 104px; align-items: flex-start; }
+.a2am-author { display: flex; min-width: 0; margin-bottom: 10px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; font-weight: 500; }
+.a2am-speaker-badge { display: inline-flex; align-items: center; gap: 5px; box-sizing: border-box; min-width: 0; max-width: 100%; padding: 4px 9px 4px 5px; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); }
+.a2am-avatar { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--dsw-alias-interactive-bg-hover-solid); }
+.a2am-signed[data-speaker="main"] > .a2am-author .a2am-avatar { color: var(--dsw-alias-state-business-primary); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent); }
+.a2am-speaker-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.a2am-signed[data-gutter] > .a2am-author { position: absolute; top: -2px; right: calc(100% + 16px); width: 112px; margin-bottom: 0; }
+.a2am-answer[data-gutter] > .a2am-author { top: 6px; }
 .a2am-reply-body { min-width: 0; }
 .a2am-stream-status { margin-bottom: 6px; }
 .a2am-mention { color: var(--dsw-alias-state-business-primary); font: inherit; }
