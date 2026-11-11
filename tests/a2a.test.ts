@@ -229,8 +229,9 @@ test('DSH Cordis loads the plugin, exposes tools to the model, and executes a re
     })).results[0].result
     const agents = await execute('a2a_list_agents', {})
     assert.equal(agents.isError, false)
-    assert.deepEqual(agents.value, [{ name: 'test-agent', role: 'business', description: '' }])
-    const result = await execute('a2a_send_message', { agent: 'test-agent', message: 'hello' })
+    assert.deepEqual(agents.value, [{ id: 'direct:test-agent', name: 'test-agent', displayName: 'test-agent',
+      source: { id: 'direct', name: '直连 Card', kind: 'direct' }, role: 'business', description: '' }])
+    const result = await execute('a2a_send_message', { agent: 'direct:test-agent', message: 'hello' })
     assert.equal(result.isError, false)
     assert.equal((result.value as { text: string }).text, '插件调用成功')
     assert.equal(result.concludesTurn, true)

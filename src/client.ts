@@ -5,7 +5,7 @@ import {
   type Task, type Part, type SendMessageResult,
 } from '@a2a-js/sdk'
 import { ClientFactory, DefaultAgentCardResolver, JsonRpcTransportFactory } from '@a2a-js/sdk/client'
-import { canCall, envSecret, httpUrl, type A2AConfig, type AgentEntry } from './config.js'
+import { agentIdentity, canCall, envSecret, httpUrl, nacosSources, type A2AConfig, type AgentEntry } from './config.js'
 import { NacosRegistry } from './nacos.js'
 import { AGUI_EXTENSION, AgUiProtocolError, AgUiTraceReader, type AgUiRecord } from './agui.js'
 
@@ -48,27 +48,60 @@ function pending(task: Task): boolean {
 }
 
 export class A2AClient {
+  /** First active registry, retained for singleton integrations. */
   nacos?: NacosRegistry
   constructor(public config: A2AConfig) {
-    this.nacos = config.nacos ? new NacosRegistry(config.nacos) : undefined
+    this.reconfigure(config)
   }
 
   reconfigure(config: A2AConfig): void {
     this.config = config
-    this.nacos = config.nacos ? new NacosRegistry(config.nacos) : undefined
+    const first = nacosSources(config).find(source => source.enabled !== false)
+    this.nacos = first ? new NacosRegistry(first) : undefined
   }
 
   async list(signal?: AbortSignal): Promise<AgentEntry[]> {
-    const { config, nacos } = this
-    const entries = new Map<string, AgentEntry>()
-    if (nacos) for (const agent of await nacos.list(signal)) entries.set(agent.name, agent)
-    // Explicit entries override discovered records, including credentials.
-    for (const agent of config.agents) entries.set(agent.name, agent)
-    return [...entries.values()].filter(agent => canCall(config.role, agent.role))
+    return (await this.discover(signal)).agents
+  }
+
+  async discover(signal?: AbortSignal) {
+    const config = this.config
+    signal?.throwIfAborted()
+    const sources = nacosSources(config).filter(source => source.enabled !== false)
+    const results = await Promise.allSettled(sources.map(source => new NacosRegistry(source).list(signal)))
+    signal?.throwIfAborted()
+    const entries: AgentEntry[] = []
+    const errors: { id: string; name: string; error: string }[] = []
+    for (const [index, result] of results.entries()) {
+      const source = sources[index]
+      if (result.status === 'rejected') {
+        errors.push({ id: source.id, name: source.name, error: '无法读取注册中心，请检查地址、命名空间及访问权限。' })
+      } else for (const agent of result.value) entries.push({ ...agent,
+        id: agentIdentity('nacos', source.id, agent.name), source: { id: source.id, name: source.name, kind: 'nacos' } })
+    }
+    for (const agent of config.agents.filter(agent => agent.enabled !== false)) entries.push({ ...agent,
+      id: agentIdentity('direct', 'direct', agent.name), source: { id: 'direct', name: '直连 Card', kind: 'direct' } })
+    const allowed = entries.filter(agent => canCall(config.role, agent.role))
+    const counts = new Map<string, number>()
+    for (const agent of allowed) counts.set(agent.name, (counts.get(agent.name) ?? 0) + 1)
+    return { agents: allowed.map(agent => ({ ...agent,
+      displayName: (counts.get(agent.name) ?? 0) > 1 ? `${agent.name}（${agent.source!.name}）` : agent.name })), errors }
   }
 
   async connect(name: string, signal?: AbortSignal) {
-    const agent = (await this.list(signal)).find(entry => entry.name === name)
+    const direct = this.config.agents.find(agent => agentIdentity('direct', 'direct', agent.name) === name
+      && agent.enabled !== false && canCall(this.config.role, agent.role))
+    const source = nacosSources(this.config).find(source => source.enabled !== false && name.startsWith(`nacos:${source.id}:`))
+    // Source-bound calls do not depend on unrelated registries being reachable.
+    const entries = direct ? [{ ...direct, id: name }]
+      : source ? await new A2AClient({ ...this.config, nacosRegistries: [source], agents: [] }).list(signal)
+      : await this.list(signal)
+    // Old histories may contain bare names; ambiguous names must never silently retarget.
+    const exact = entries.find(entry => entry.id === name)
+    const matches = entries.filter(entry => entry.name === name)
+    if (!exact && /^(direct|nacos):/.test(name)) throw new Error(`Agent unavailable or disallowed: ${name}`)
+    if (!exact && matches.length > 1) throw new Error(`Agent name is ambiguous; select its source: ${name}`)
+    const agent = exact ?? matches[0]
     if (!agent) throw new Error(`Agent unavailable or disallowed: ${name}`)
     const cardUrl = httpUrl(agent.cardUrl)
     const token = envSecret(agent.tokenEnv)

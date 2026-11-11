@@ -14,7 +14,7 @@ export interface GroupMessage {
   requestId?: string; contextId?: string; taskId?: string; callId?: string; childSessionId?: string; authorName?: string; peer?: { sessionId: string; turn: number; seq?: number }
 }
 export type ConversationMember = {
-  id: string; name: string; description: string; sessionId?: string
+  id: string; name: string; description: string; sessionId?: string; aliases?: string[]
 } & ({ kind: 'remote'; remoteName: string } | { kind: 'local'; presetId: string; childSessionId?: string })
 export interface MembersRecord { kind: 'members'; id: '@members'; revision: number; members: ConversationMember[] }
 export type GroupRecord = RoomRecord | GroupMessage | MembersRecord

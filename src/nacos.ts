@@ -2,7 +2,6 @@ import { AgentCard } from '@a2a-js/sdk'
 import { DefaultAgentCardResolver } from '@a2a-js/sdk/client'
 import { isLegacyAgentCard } from '@a2a-js/sdk/compat/v0_3/client'
 import { envSecret, httpUrl, type AgentEntry, type NacosConfig } from './config.js'
-import { NacosNamingRegistry } from './nacos-naming.js'
 
 /** Plugin policy/source information; independent from the AG-UI execution extension. */
 export const DSH_REGISTRY_EXTENSION = 'urn:dsh:a2a:registry:v1'
@@ -30,12 +29,9 @@ function policy(card: AgentCard) {
   return card.capabilities?.extensions.find(extension => extension.uri === DSH_REGISTRY_EXTENSION)?.params
 }
 
-/** Nacos 3.1+ native Agent Registry; Naming is an explicit legacy option. */
+/** Nacos native Agent Registry. */
 export class NacosRegistry {
-  private readonly naming?: NacosNamingRegistry
-  constructor(readonly config: NacosConfig) {
-    if (config.registry === 'naming') this.naming = new NacosNamingRegistry(config)
-  }
+  constructor(readonly config: NacosConfig) {}
 
   private async request<T>(suffix: string, params: Record<string, string> = {}, method = 'GET', signal?: AbortSignal): Promise<T> {
     const url = httpUrl(`${this.config.serverUrl.replace(/\/$/, '')}/v3/admin/ai/a2a${suffix}`)
@@ -57,7 +53,6 @@ export class NacosRegistry {
   }
 
   async list(signal?: AbortSignal): Promise<AgentEntry[]> {
-    if (this.naming) return this.naming.list(signal)
     const entries: AgentEntry[] = []
     let count = 0
     for (let pageNo = 1; ; pageNo++) {
@@ -96,7 +91,6 @@ export class NacosRegistry {
 
   /** Publish a persistent URL registration. This does not register a Naming instance or a health lease. */
   async publish(agent: AgentEntry, supplied?: AgentCard): Promise<{ name: string; version: string }> {
-    if (this.naming) throw new Error('publish requires nacos.registry=agent')
     if (!/^[\x20-\x7e]{1,64}$/.test(agent.name) || !agent.name.trim()) {
       throw new Error('Nacos Agent name must contain 1–64 printable ASCII characters')
     }
@@ -153,9 +147,8 @@ export class NacosRegistry {
     return { name: agent.name, version: card.version }
   }
 
-  /** Native catalogs persist across shutdown; only the legacy Naming adapter has a lease disposer. */
+  /** Native catalogs persist across shutdown. */
   async register(agent: AgentEntry, card?: AgentCard): Promise<() => Promise<void>> {
-    if (this.naming) return this.naming.register(agent)
     await this.publish(agent, card)
     return async () => {}
   }

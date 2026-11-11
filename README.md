@@ -2,7 +2,7 @@
 
 把 DSH 原生会话扩展成多 Agent 群聊：保留官方输入框、消息流、执行过程与导航，通过 `@成员` 协调本地 Agent 和远端 A2A Agent。
 
-包名为 `dsh-a2a`，当前版本 **0.10.3**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
+包名为 `dsh-a2a`，当前版本 **0.11.1**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
 
 ## 会话行为
 
@@ -31,19 +31,19 @@ npm run build
 npm pack
 ```
 
-构建生成 `dist/`，打包生成 `dsh-a2a-0.10.3.tgz`；两者均不提交 Git。
+构建生成 `dist/`，打包生成 `dsh-a2a-0.11.1.tgz`；两者均不提交 Git。
 
 macOS DMG 版使用应用自带的 CLI 安装到 `desktop` profile：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add "$PWD/dsh-a2a-0.10.3.tgz"
+  plugin --profile desktop add "$PWD/dsh-a2a-0.11.1.tgz"
 ```
 
 Web 版安装到实际使用的 profile：
 
 ```sh
-dsh plugin --profile web add "$PWD/dsh-a2a-0.10.3.tgz"
+dsh plugin --profile web add "$PWD/dsh-a2a-0.11.1.tgz"
 ```
 
 安装后重新打开 DSH。卸载使用 `dsh plugin --profile desktop remove dsh-a2a`，Web 版将 profile 改为 `web`。
@@ -52,38 +52,69 @@ dsh plugin --profile web add "$PWD/dsh-a2a-0.10.3.tgz"
 
 打开左下角 **更多 → 设置 → A2A 配置**，入口与通用设置、模型、Agent 预设同级，不依赖当前选中的会话。
 
-- 启用 Nacos 后，可配置服务地址（包含部署的上下文路径，如 `/nacos`）、命名空间 ID、注册模式和访问令牌环境变量名。默认使用原生 Agent Registry；兼容 Naming 时还可配置服务分组及服务名前缀。
-- **测试连接**使用当前表单预览注册中心，不保存配置，也不改变会话发现源。列表支持搜索、刷新和展开信息，显示可发现 Agent 的名称、描述、角色、版本、Card / 来源地址、接口、流式能力及技能；Naming 模式展示基础信息。
-- **保存配置**写入当前插件使用的 `a2a.config.json`，立即更新发现源，无需重启。页面底部显示实际文件路径；首次使用没有配置文件时，也可从此页创建。
-- 保存保留静态 Agent、调用角色、超时等其他配置。配置被其他窗口或外部文件修改时，需要重新加载后再保存。
-- Token 从宿主进程环境读取，页面只填写环境变量名；清空后可移除该鉴权配置。
-- 注册中心中的 Agent 仍需在各会话设置中显式添加。关闭 Nacos 后，配置文件中直接添加的远端 Agent 仍可使用。
+- **Nacos 注册发现**与**直连 Card**可同时使用，各自支持多个条目，所有启用来源的 Agent 会汇总到会话成员列表。
+- **Nacos 注册发现**：为每个注册中心配置名称、服务地址（含部署上下文路径，如 `/nacos`）、命名空间 ID 和可选的令牌环境变量名。各中心可独立启停、编辑、删除、测试连接；展开目录后可搜索、查看 Agent 的版本、接口、流式能力及技能。统一使用 Agent Registry，移除 Naming 模式、服务分组和服务名前缀。
+- **直连 Card**：添加、编辑、启停或删除多个 Agent，配置 Card 地址、会话中的名称、类型、描述及可选的 Bearer Token 环境变量名。**读取 Card**验证连接并自动填写空白的名称和描述，展示版本、接口、流式能力和技能，不发送对话。
+- **测试所有连接**使用当前表单预览启用的注册中心和 Card，不保存配置、不改变运行中的发现源。单个来源失败会单独提示，其他来源仍可用。
+- **保存配置**写入页面底部所示的 `a2a.config.json`，立即更新会话发现，无需重启。首次使用没有配置文件时也可从此页创建；调用角色、超时和其他无关字段保留。配置被其他窗口或外部文件修改时，需要重新加载后再保存。
+- Token 从宿主进程环境读取，页面只填写环境变量名；每个注册中心和每个直连 Agent 的凭证独立配置。
+- 所有远端 Agent 仍需在各会话设置中显式添加。不同来源的同名 Agent 会保留并标明来源；选择后的调用绑定来源，不会在来源失效时转接到其他同名 Agent。
 
 ## 连接配置
 
 默认读取 `~/.dsh/a2a.config.json`；设置 `DSH_HOME` 时改读该目录。`DSH_A2A_CONFIG` 可以指定其他文件。真实配置不提交仓库；已有配置应按需合并。
 
-可在本机配置文件中设置 Nacos 发现：
+在同一份配置中设置多个 Nacos 和直连 Card：
 
 ```json
 {
   "role": "personal",
   "timeoutMs": 180000,
   "pollIntervalMs": 500,
-  "agents": [],
-  "nacos": {
-    "serverUrl": "http://127.0.0.1:18848/nacos",
-    "namespaceId": "public",
-    "registry": "agent"
-  }
+  "nacosRegistries": [
+    {
+      "id": "team-a",
+      "name": "团队 A 注册中心",
+      "enabled": true,
+      "serverUrl": "http://127.0.0.1:18848/nacos",
+      "namespaceId": "public",
+      "accessTokenEnv": "NACOS_TEAM_A_TOKEN"
+    },
+    {
+      "id": "team-b",
+      "name": "团队 B 注册中心",
+      "enabled": true,
+      "serverUrl": "https://registry.example.com/nacos",
+      "namespaceId": "public"
+    }
+  ],
+  "agents": [
+    {
+      "name": "backend",
+      "role": "business",
+      "enabled": true,
+      "cardUrl": "https://backend.example.com/card.json",
+      "tokenEnv": "A2A_BACKEND_TOKEN"
+    },
+    {
+      "name": "advisor",
+      "role": "business",
+      "enabled": true,
+      "cardUrl": "https://advisor.example.com/card.json"
+    }
+  ]
 }
 ```
 
-也可在 `agents` 中配置已有服务，不启用 Nacos。每项包含 `name`、`role`（`personal` 或 `business`）、`cardUrl`，以及可选的 `description`、`tokenEnv`。`tokenEnv` 保存环境变量名称，不保存实际凭证。
+只使用直连 Card 时，将 `nacosRegistries` 设为空数组；只使用 Nacos 时，将 `agents` 设为空数组。两个列表均支持独立的 `enabled` 开关。直连项还可设置 `description`；`tokenEnv` 和 `accessTokenEnv` 保存环境变量名称，不保存实际凭证。
 
-受保护的 Nacos 使用 `nacos.accessTokenEnv` 指向 token 环境变量；当前不自动登录或续期。静态配置覆盖同名发现记录。凭证仅发往同源端点，禁止带用户名或密码的 URL，不跟随携带凭证的重定向。
+兼容旧单个 `nacos` 对象；没有 `nacosRegistries` 时按一个注册中心读取，设置页面保存时迁移为数组并清除旧模式字段。显式的 `nacosRegistries: []` 会关闭旧单项发现。旧 Naming 服务需重新发布到 Agent Registry。
 
-默认使用 **Nacos 原生 Agent Registry**（Nacos 3.1+，本地验证 3.2.0）。Agent 显示在「Agent 管理 → Agent 列表」，默认命名空间为 `public`；通过 `/v3/admin/ai/a2a/list` 和 `/v3/admin/ai/a2a` 列表与详情接口发现，不再通过 Naming 服务列表查询。
+每个来源的 Agent 拥有稳定 ID，例如 `nacos:team-a:backend`、`direct:advisor`。列表工具返回 ID、名称、显示名称与来源；调用工具应使用返回的 ID。同名来源互不覆盖，旧的裸名称仅在名称唯一时继续解析；已选择的来源不可用时会报错。
+
+受保护的 Nacos 使用每项的 `accessTokenEnv` 指向 token 环境变量；当前不自动登录或续期。凭证仅发往同源端点，禁止带用户名或密码的 URL，不跟随携带凭证的重定向。
+
+统一使用 **Nacos 原生 Agent Registry**（Nacos 3.1+，本地验证 3.2.0）。Agent 显示在「Agent 管理 → Agent 列表」，默认命名空间为 `public`；通过 `/v3/admin/ai/a2a/list` 和 `/v3/admin/ai/a2a` 列表与详情接口发现。
 
 发布使用官方 **URL** 模式，`url` 保存真正的 A2A 调用地址。Card 持久保留，无需注册进程或 Naming 心跳，停止 Agent 不会自动删除目录条目；本模式不做实例健康检查或动态端点租约。相同命名空间内名称唯一，目录名称需为 1–64 个 ASCII 可见字符。
 
@@ -91,23 +122,20 @@ Nacos 3.2 的 Card 模型使用 `url` / `preferredTransport`，不能完整保�
 
 通过控制台或其他客户端导入、没有上述扩展的 Card，也可直接按 Nacos 返回的 Card 连接。缺少角色分类时按 `personal` 处理，防止业务身份因分类缺失而调用个人助理；供业务身份调用的成员应以 `business` 角色发布。远端仍需独立校验调用者身份。
 
-旧 Naming 方式仅在显式设置 `nacos.registry: "naming"` 时启用，继续支持 `groupName`（默认 `DSH_A2A`）和 `servicePrefix`（默认 `a2a.`）。此模式才使用实例元数据、健康筛选、心跳和退出注销，不与原生目录自动混查。旧条目需重新发布到原生 Agent Registry。
-
 ## 必要脚本
 
-`npm run register:agent` 读取已有服务的 Agent Card 并发布到原生 Agent Registry。命令完成后即可退出；重复发布同源条目会更新并选择其默认发布版本。运行前通过环境变量提供：
+`npm run register:agent` 读取已有服务的 Agent Card 并发布到选定的 Agent Registry。命令完成后即可退出；重复发布同源条目会更新并选择其默认发布版本。
 
-| 环境变量 | 用途 |
-|---|---|
-| `NACOS_URL` | Nacos API 地址，必填 |
-| `A2A_AGENT_NAME` | Agent 目录名称，必填 |
-| `A2A_AGENT_CARD_URL` | 已有服务的 Agent Card 地址，必填 |
-| `A2A_AGENT_ROLE` | `personal` 或 `business`，默认 `business` |
-| `A2A_AGENT_DESCRIPTION` | 成员职责说明，可选 |
-| `NACOS_NAMESPACE_ID` | 命名空间，原生模式默认 `public` |
-| `NACOS_REGISTRY` | `agent`（默认）或旧 `naming` 模式 |
-| `NACOS_GROUP_NAME` / `NACOS_SERVICE_PREFIX` | 仅 Naming 模式使用的分组和前缀 |
-| `NACOS_ACCESS_TOKEN` | Nacos 访问 token，可选，仅通过本机环境提供 |
+```sh
+npm run register:agent -- \
+  --config ./a2a.config.json \
+  --registry team-a \
+  --name backend \
+  --card-url https://backend.example.com/card.json \
+  --role business
+```
+
+`--config` 默认使用 `DSH_A2A_CONFIG`，未设置时读取当前目录的 `a2a.config.json`。`--registry` 接受注册中心 ID 或名称；仅有一个启用的中心时可省略。`--name`、`--card-url` 必填，`--role` 为 `personal` 或 `business`，默认 `business`。注册中心的访问令牌按该项的 `accessTokenEnv` 从环境读取。
 
 `npm run smoke` 验证原生工具、Agent 发现及 A2A 调用。通过 `DSH_A2A_CONFIG` 指定本机配置，设置 `A2A_AGENT_NAME` 和 `A2A_MESSAGE` 后执行。脚本只报告完成状态和回复长度，不打印回复正文；这会实际调用指定服务。
 
@@ -124,7 +152,7 @@ docker compose up -d --wait nacos
 
 使用官方 `@a2a-js/sdk`，支持 JSON-RPC 的 A2A **1.0 / 0.3**。声明 streaming 能力的服务默认通过 SSE 返回，其他服务使用轮询；保留任务状态、contextId、取消与待补充输入的处理。
 
-`dsh-a2a/server` 是可选入站插件，默认客户端包配置不会启用它。在自己的 Cordis 配置中显式启用时，需要设置 `publicUrl`、已有模型路由，以及通过 `tokenEnv` 绑定可信身份的 `principals`。`allowedTools` 默认空；可通过 `registryConfigFile` 将 Card 发布到 Nacos。每个入站任务使用独立会话，结束后释放。
+`dsh-a2a/server` 是可选入站插件，默认客户端包配置不会启用它。在自己的 Cordis 配置中显式启用时，需要设置 `publicUrl`、已有模型路由，以及通过 `tokenEnv` 绑定可信身份的 `principals`。`allowedTools` 默认空；可通过 `registryConfigFile` 将 Card 发布到所有启用的 Nacos 注册中心。每个入站任务使用独立会话，结束后释放。
 
 个人身份可调用个人或业务 Agent；业务身份不能主动调用个人 Agent。Nacos 负责发现，不提供 NAT 穿透；跨网络连接仍需已有网络通道。
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-a2a",
-  "version": "0.10.3",
+  "version": "0.11.1",
   "description": "Native group conversations for DeepSeek Harness, with local Agents, A2A peers, and Nacos discovery",
   "repository": {
     "type": "git",
@@ -47,7 +47,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/build-client.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "smoke": "tsx scripts/smoke.ts",

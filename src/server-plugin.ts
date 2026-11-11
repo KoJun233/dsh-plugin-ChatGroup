@@ -6,7 +6,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
 import { createA2AServer, type Principal } from './server.js'
-import { loadConfig, type AgentRole } from './config.js'
+import { loadConfig, nacosSources, type AgentRole } from './config.js'
 import { NacosRegistry } from './nacos.js'
 
 export const name = 'a2a-server'
@@ -71,12 +71,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   ctx.effect(() => () => server.dispose())
   if (config.registryConfigFile) {
-    const { nacos } = await loadConfig(config.registryConfigFile)
-    if (!nacos) throw new Error('registryConfigFile must contain Nacos configuration')
-    const deregister = await new NacosRegistry(nacos).register({
-      name: config.name, role: config.role, description: config.description,
-      cardUrl: `${new URL(config.publicUrl).origin}/.well-known/agent-card.json`,
-    }, server.card)
-    try { ctx.effect(() => deregister) } catch (error) { await deregister(); throw error }
+    const sources = nacosSources(await loadConfig(config.registryConfigFile)).filter(source => source.enabled !== false)
+    if (!sources.length) throw new Error('registryConfigFile must contain an enabled Nacos registry')
+    for (const source of sources) {
+      const deregister = await new NacosRegistry(source).register({
+        name: config.name, role: config.role, description: config.description,
+        cardUrl: `${new URL(config.publicUrl).origin}/.well-known/agent-card.json`,
+      }, server.card)
+      try { ctx.effect(() => deregister) } catch (error) { await deregister(); throw error }
+    }
   }
 }

@@ -1,47 +1,24 @@
+import { parseArgs } from 'node:util'
+import { httpUrl, loadConfig, nacosSources } from '../src/config.js'
 import { NacosRegistry } from '../src/nacos.js'
-import { httpUrl, type AgentEntry } from '../src/config.js'
 
-function required(name: string): string {
-  const value = process.env[name]?.trim()
-  if (!value) throw new Error(`Required environment variable is missing: ${name}`)
-  return value
+const { values } = parseArgs({ options: {
+  config: { type: 'string', default: process.env.DSH_A2A_CONFIG ?? './a2a.config.json' },
+  name: { type: 'string' },
+  'card-url': { type: 'string' },
+  role: { type: 'string', default: 'business' },
+  registry: { type: 'string' },
+} })
+if (!values.name?.trim() || !values['card-url'] || !['personal', 'business'].includes(values.role!)) {
+  throw new Error('用法：npm run register:agent -- --name backend --card-url http://127.0.0.1:8080/a2a/back/card.json [--config ./a2a.config.json] [--role business]')
 }
-
-const serverUrl = required('NACOS_URL')
-const name = required('A2A_AGENT_NAME')
-const cardUrl = required('A2A_AGENT_CARD_URL')
-const role = process.env.A2A_AGENT_ROLE ?? 'business'
-if (role !== 'personal' && role !== 'business') throw new Error('A2A_AGENT_ROLE must be personal or business.')
-const registryMode = process.env.NACOS_REGISTRY ?? 'agent'
-if (registryMode !== 'agent' && registryMode !== 'naming') throw new Error('NACOS_REGISTRY must be agent or naming.')
-httpUrl(serverUrl)
-httpUrl(cardUrl)
-
-const registry = new NacosRegistry({
-  serverUrl,
-  registry: registryMode,
-  namespaceId: process.env.NACOS_NAMESPACE_ID,
-  groupName: process.env.NACOS_GROUP_NAME,
-  servicePrefix: process.env.NACOS_SERVICE_PREFIX,
-  accessTokenEnv: process.env.NACOS_ACCESS_TOKEN ? 'NACOS_ACCESS_TOKEN' : undefined,
-})
-const entry: AgentEntry = { name, role, cardUrl, description: process.env.A2A_AGENT_DESCRIPTION }
-
-if (registryMode === 'agent') {
-  const result = await registry.publish(entry)
-  console.log(`已发布 Agent ${result.name}（${result.version}）到 Nacos Agent Registry，无需保持注册进程运行。`)
-} else {
-  const stop = await registry.register(entry)
-
-  console.log('Agent 已注册，保持此进程运行以发送心跳。')
-  const hold = setInterval(() => {}, 60000)
-  let stopping = false
-  async function shutdown() {
-    if (stopping) return
-    stopping = true
-    clearInterval(hold)
-    try { await stop() } catch { console.error('Agent 注销失败，请检查 Nacos 中的实例状态。'); process.exitCode = 1 }
-  }
-  process.once('SIGINT', () => { void shutdown() })
-  process.once('SIGTERM', () => { void shutdown() })
-}
+const config = await loadConfig(values.config!)
+const sources = nacosSources(config).filter(source => source.enabled !== false)
+const source = values.registry ? sources.find(source => source.id === values.registry || source.name === values.registry)
+  : sources.length === 1 ? sources[0] : undefined
+if (!source) throw new Error('请配置启用的 Nacos 注册中心；存在多个时使用 --registry 指定注册中心 id 或名称。')
+const cardUrl = httpUrl(values['card-url']).href
+const registry = new NacosRegistry(source)
+const entry = { name: values.name, cardUrl, role: values.role as 'business' | 'personal' }
+const result = await registry.publish(entry)
+console.log(`已发布 Agent ${result.name}（${result.version}）到 ${source.name}；namespace=${source.namespaceId || 'public'}。注册信息持久保存，无需保持此进程运行。`)

@@ -50,7 +50,7 @@ async function fixture() {
   const server = app.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-  const config: NacosConfig = { serverUrl: `${origin}/nacos`, namespaceId: 'test-space', registry: 'agent' }
+  const config: NacosConfig = { serverUrl: `${origin}/nacos`, namespaceId: 'test-space' }
   return { app, cards, requests, origin, config, registry: new NacosRegistry(config),
     fail(code: number) { apiError = code },
     async close() { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) },
@@ -150,7 +150,7 @@ test('native Registry errors do not silently fall back to Naming', async () => {
     assert.equal(f.requests.length, 1)
     assert.equal(f.requests[0].path, '/admin/ai/a2a/list')
     const config = FileConfig.parse({ nacos: { serverUrl: f.config.serverUrl } })
-    assert.equal(config.nacos!.registry, 'agent')
+    assert.equal('registry' in config.nacos!, false)
     assert.equal(config.nacos!.namespaceId, 'public')
   } finally { await f.close() }
 })
@@ -174,14 +174,18 @@ test('Nacos access token stays at Registry and does not enter published Agent me
   } finally { delete process.env.A2A_TEST_NACOS_TOKEN; delete process.env.A2A_TEST_AGENT_TOKEN; await f.close() }
 })
 
-test('legacy Naming discovery remains available only through the explicit mode', async () => {
+test('obsolete Naming selectors cannot route discovery through Naming APIs', async () => {
   const f = await fixture()
   f.app.get('/nacos/v3/admin/ns/service/list', (_req, res) => res.json({ code: 0, data: { totalCount: 1, pageItems: [{ name: 'a2a.legacy' }] } }))
   f.app.get('/nacos/v3/client/ns/instance/list', (_req, res) => res.json({ code: 0, data: [{ healthy: true, enabled: true, ip: '127.0.0.1', port: 4100,
     metadata: { a2aRole: 'business', a2aCardUrl: `${f.origin}/card` } }] }))
   try {
-    const registry = new NacosRegistry({ ...f.config, registry: 'naming' })
-    assert.equal((await registry.list())[0].name, 'legacy')
-    assert.ok(f.requests.every(r => !r.path.includes('/ai/')))
+    const config = FileConfig.parse({ nacos: { ...f.config, registry: 'naming', groupName: 'OLD', servicePrefix: 'old.' } })
+    const registry = new NacosRegistry(config.nacos!)
+    assert.deepEqual(await registry.list(), [])
+    assert.ok(f.requests.length > 0 && f.requests.every(r => r.path.startsWith('/admin/ai/a2a')))
+    assert.equal('registry' in config.nacos!, false)
+    assert.equal('groupName' in config.nacos!, false)
+    assert.equal('servicePrefix' in config.nacos!, false)
   } finally { await f.close() }
 })
