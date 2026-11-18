@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Artifact, Message, Role, Task, TaskState, TaskStatusUpdateEvent, TaskArtifactUpdateEvent } from '@a2a-js/sdk'
 import { AgentEvent, type AgentExecutor, type ExecutionEventBus, type RequestContext } from '@a2a-js/sdk/server'
 import { partsText } from './client.js'
+import { heartbeatArtifact } from './heartbeat.js'
 
 export type Runner = (text: string, signal: AbortSignal, emitText: (delta: string) => void) => Promise<string>
 interface RunningTask { controller: AbortController; contextId: string; done: Promise<void>; cancelled: boolean; bus: ExecutionEventBus }
@@ -10,7 +11,7 @@ interface RunningTask { controller: AbortController; contextId: string; done: Pr
 export class TextExecutor implements AgentExecutor {
   private readonly running = new Map<string, RunningTask>()
   private closing = false
-  constructor(private readonly runner: Runner, private readonly timeoutMs = 60000) {}
+  constructor(private readonly runner: Runner, private readonly timeoutMs = 60000, private readonly heartbeatIntervalMs = 15000) {}
 
   async execute(request: RequestContext, bus: ExecutionEventBus): Promise<void> {
     if (this.closing) throw new Error('Agent is shutting down')
@@ -29,6 +30,21 @@ export class TextExecutor implements AgentExecutor {
       status: { state: TaskState.TASK_STATE_WORKING, timestamp: new Date().toISOString() },
     })))
     const timer = setTimeout(() => controller.abort(new Error('Task execution timed out')), this.timeoutMs)
+    let heartbeatSequence = 0
+    const heartbeat = setInterval(() => {
+      if (controller.signal.aborted) return
+      try {
+        bus.publish(AgentEvent.artifactUpdate(TaskArtifactUpdateEvent.fromJSON({
+          taskId, contextId, artifact: Artifact.toJSON(heartbeatArtifact(taskId, ++heartbeatSequence)),
+          append: false, lastChunk: false,
+        })))
+      } catch (error) {
+        // Timer failures must abort this execution, not escape and crash the host.
+        clearInterval(heartbeat)
+        controller.abort(error)
+      }
+    }, this.heartbeatIntervalMs)
+    heartbeat.unref()
     const artifactId = randomUUID()
     let emitted = false
     const publishText = (text: string, lastChunk: boolean, append: boolean) => {
@@ -55,6 +71,7 @@ export class TextExecutor implements AgentExecutor {
         error instanceof Error ? error.message : 'Execution failed')
     } finally {
       clearTimeout(timer)
+      clearInterval(heartbeat)
       this.running.delete(taskId)
       settled()
     }

@@ -14,6 +14,7 @@ export const inject = ['agents', 'tools', 'webServer']
 export interface Config {
   name: string; description: string; role: AgentRole; publicUrl: string
   provider: string; model: string; allowedTools: string[]; principals: Principal[]; timeoutMs: number
+  heartbeatIntervalMs?: number
   registryConfigFile?: string
 }
 const role = z.enum(['personal', 'business'])
@@ -24,6 +25,7 @@ export const Config = z.object({
   allowedTools: z.array(z.string()).default([]),
   principals: z.array(z.object({ id: z.string(), role, tokenEnv: z.string() })),
   timeoutMs: z.number().min(1000).max(600000).default(60000),
+  heartbeatIntervalMs: z.number().int().min(50).max(30000).default(15000),
   registryConfigFile: z.string().optional(),
 })
 

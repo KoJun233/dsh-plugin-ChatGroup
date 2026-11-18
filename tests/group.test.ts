@@ -92,13 +92,14 @@ test('rosters replay independently, removal preserves signed history and member 
   f.room.remove('story-assistant')
   const replay = new GroupRoom(f.store)
   assert.deepEqual(replay.members.map(m => m.id), ['oa'])
-  const prompt = replay.memberPrompt('story-assistant', '续写')
-  assert.match(prompt, /小猫捡到星星/); assert.doesNotMatch(prompt, /OA机密|OA结果/)
+  assert.equal(replay.contextId('story-assistant'), 'story-context')
+  assert.equal(replay.contextId('oa'), 'oa-context')
+  assert.equal(replay.messages[1].text, '小猫捡到星星')
   assert.equal(replay.messages[1].authorName, '故事助手')
   assert.equal(roomFixture().room.members.length, 0)
 })
 
-test('member transfers stream durable replies and isolate each member history', async () => {
+test('member transfers send only the current input and pin contextId to the DSH session', async () => {
   const requests: { name: string; text: string; options?: SendOptions }[] = []
   const f = runtimeFixture(async (name, text, options) => {
     requests.push({ name, text, options }); options?.onUpdate?.({ ...answer(name, '部分故事'), state: 'TASK_STATE_WORKING' })
@@ -106,9 +107,8 @@ test('member transfers stream durable replies and isolate each member history', 
   })
   try {
     for (const [name, text] of [['story-assistant', '猫咪故事'], ['oa', 'OA机密'], ['story-assistant', '续写']]) await f.runtime.delegate(f.agent, name, text, { callId: crypto.randomUUID() })
-    assert.match(requests[2].text, /猫咪故事|story-assistant最终答复/)
-    assert.doesNotMatch(requests[2].text, /OA机密|oa最终答复/)
-    assert.equal(requests[2].options?.contextId, 'story-assistant-context')
+    assert.deepEqual(requests.map(request => request.text), ['猫咪故事', 'OA机密', '续写'])
+    assert.deepEqual(requests.map(request => request.options?.contextId), Array(3).fill(f.agent.session.id))
     const messages = f.runtime.room(f.agent.session).messages.filter(m => m.role === 'member')
     assert.equal(messages.length, 3); assert.equal(messages.at(-1)?.state, 'completed')
     assert.equal(f.agent.session.deriveMessages().filter(m => m.role === 'user').length, 0, 'tool does not create a second user message')
@@ -148,12 +148,27 @@ test('input-required resumes only that member pending task', async () => {
   const requests: (SendOptions | undefined)[] = []
   const f = runtimeFixture(async (name, _text, options) => {
     requests.push(options)
-    return requests.length === 1 ? { ...answer(name, '主角叫什么名字？'), state: 'TASK_STATE_INPUT_REQUIRED', taskId: 'pending-one' } : answer(name, '完成')
+    return requests.length === 1 ? { ...answer(name, '主角叫什么名字？'), contextId: options!.contextId!, state: 'TASK_STATE_INPUT_REQUIRED', taskId: 'pending-one' } : answer(name, '完成')
   })
   try {
     await f.runtime.delegate(f.agent, 'story-assistant', '写故事', { callId: 'one' })
     await f.runtime.delegate(f.agent, 'story-assistant', '叫星星', { callId: 'two' })
+    assert.equal(requests[0]?.contextId, f.agent.session.id)
+    assert.equal(requests[1]?.contextId, f.agent.session.id)
     assert.equal(requests[1]?.taskId, 'pending-one')
+  } finally { await f.dispose() }
+})
+
+test('pending tasks in old remote contexts are not attached to the DSH context', async () => {
+  let request: SendOptions | undefined
+  const f = runtimeFixture(async (name, _text, options) => { request = options; return answer(name, '完成') })
+  try {
+    f.runtime.room(f.agent.session).message('member', 'story-assistant', '名字？', {
+      state: 'input-required', contextId: 'old-remote-context', taskId: 'old-pending-task',
+    })
+    await f.runtime.delegate(f.agent, 'story-assistant', '叫星星', { callId: 'migrate', contextId: 'old-remote-context', taskId: 'old-pending-task' })
+    assert.equal(request?.contextId, f.agent.session.id)
+    assert.equal(request?.taskId, undefined)
   } finally { await f.dispose() }
 })
 

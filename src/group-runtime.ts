@@ -270,9 +270,9 @@ export class GroupRuntime {
         if (member.id !== order.members[order.next]) throw new Error('请严格按照用户 @成员 的顺序调用，且只调用本次点名的成员。')
         order.next++
       }
-      const prompt = member.kind === 'remote' ? room.memberPrompt(member.id, text) : text
-      const contextId = room.contextId(member.id)
-      const taskId = room.pendingTaskId(member.id)
+      const contextId = agent.session.id
+      // Pending tasks from an older remote context cannot move to this DSH session.
+      const taskId = room.contextId(member.id) === contextId ? room.pendingTaskId(member.id) : undefined
       room.message('dispatch', '顾问', text, { recipient: member.id, callId: options.callId })
       let message = room.message('member', member.id, '', { state: 'working', callId: options.callId, authorName: member.name })
       let latest: CallResult | undefined
@@ -289,7 +289,7 @@ export class GroupRuntime {
       try {
         const result = await this.peers.ask(agent, member, text, signal, onUpdate, async updated => {
           room.updateMember(updated); await this.ctx.sessions.flush(agent.session)
-        }, member.kind === 'remote' ? (remoteSignal, update, trace) => this.client.send(member.remoteName, prompt,
+        }, member.kind === 'remote' ? (remoteSignal, update, trace) => this.client.send(member.remoteName, text,
           { ...options, signal: remoteSignal, contextId, taskId, onUpdate: update,
             onTrace: record => { options.onTrace?.(record); trace?.(record) },
           }) : undefined)

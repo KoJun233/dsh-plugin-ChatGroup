@@ -1,6 +1,6 @@
 {
   "name": "dsh-a2a",
-  "version": "0.11.1",
+  "version": "0.11.4",
   "description": "Native group conversations for DeepSeek Harness, with local Agents, A2A peers, and Nacos discovery",
   "repository": {
     "type": "git",
@@ -21,7 +21,8 @@
   "files": [
     "dist",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "docs/*.md"
   ],
   "dsh": {
     "client": {
@@ -66,6 +67,7 @@
     "@deepseek-ai/dsh-agent-preset-registry": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-host-webserver": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-scope": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-session": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-system-prompt": ">=0.2.2-rc.1 <0.3.0",
     "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1 <0.3.0",

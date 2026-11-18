@@ -58,7 +58,8 @@ export async function apply(ctx: Context, options: Config): Promise<void> {
     async execute(args, exec) {
       const progress = progressWriter(exec.agent?.session, exec.callId, args.agent)
       try {
-        const sendOptions = { ...args, signal: exec.signal, onUpdate: (value: import('./client.js').CallResult) => progress.update(value) }
+        const sendOptions = { ...args, signal: exec.signal, contextId: exec.agent?.session.id ?? args.contextId,
+          onUpdate: (value: import('./client.js').CallResult) => progress.update(value) }
         const result = group && exec.agent && args.wait !== false
           ? await group.delegate(exec.agent, args.agent, args.message, { ...sendOptions, callId: exec.callId })
           : await client.send(group && exec.agent ? group.remoteName(exec.agent, args.agent) : args.agent, args.message, sendOptions)

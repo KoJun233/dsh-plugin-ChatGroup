@@ -57,6 +57,26 @@ test('official SDK sends a task and returns the remote artifact', async () => {
   } finally { await f.close() }
 })
 
+for (const legacy of [false, true]) test(`DSH contextId survives ${legacy ? '0.3' : '1.0'} streaming and polling with no session_id metadata`, async () => {
+  const f = await fixture(async text => text, {}, legacy)
+  try {
+    const contextId = crypto.randomUUID()
+    const sdk = await f.client.connect('test-agent')
+    for (const stream of [true, false]) {
+      const text = stream ? '为什么没有绑定流水' : '排查'
+      const result = await f.client.send('test-agent', text, { contextId, stream })
+      assert.equal(result.contextId, contextId)
+      const task = await sdk.getTask({ id: result.taskId!, tenant: '' })
+      assert.equal(task.contextId, contextId)
+      const message = task.history[0]
+      assert.equal(message.contextId, contextId)
+      assert.equal(message.parts[0].content?.value, text)
+      assert.equal(message.metadata?.session_id, undefined)
+      assert.equal(message.metadata?.sessionId, undefined)
+    }
+  } finally { await f.close() }
+})
+
 test('v1 streaming publishes Task first and includes an artifact and completed status', async () => {
   const f = await fixture(async () => 'done')
   try {
@@ -231,9 +251,10 @@ test('DSH Cordis loads the plugin, exposes tools to the model, and executes a re
     assert.equal(agents.isError, false)
     assert.deepEqual(agents.value, [{ id: 'direct:test-agent', name: 'test-agent', displayName: 'test-agent',
       source: { id: 'direct', name: '直连 Card', kind: 'direct' }, role: 'business', description: '' }])
-    const result = await execute('a2a_send_message', { agent: 'direct:test-agent', message: 'hello' })
+    const result = await execute('a2a_send_message', { agent: 'direct:test-agent', message: 'hello', contextId: 'ignored-model-value' })
     assert.equal(result.isError, false)
     assert.equal((result.value as { text: string }).text, '插件调用成功')
+    assert.equal((result.value as { contextId: string }).contextId, id)
     assert.equal(result.concludesTurn, true)
     const collected = await execute('a2a_send_message', { agent: 'test-agent', message: 'collect', answerMode: 'collect' })
     assert.equal(collected.isError, false)

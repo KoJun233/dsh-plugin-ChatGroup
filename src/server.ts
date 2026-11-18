@@ -5,6 +5,7 @@ import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server'
 import { agentCardHandler, jsonRpcHandler } from '@a2a-js/sdk/server/express'
 import { canCall, envSecret, httpUrl, type AgentRole } from './config.js'
 import { TextExecutor, type Runner } from './executor.js'
+import { HEARTBEAT_EXTENSION } from './heartbeat.js'
 
 export interface Principal { id: string; role: AgentRole; tokenEnv: string }
 export interface ServerOptions {
@@ -16,6 +17,7 @@ export interface ServerOptions {
   /** Only the standalone, loopback-bound demo uses this. DSH ingress requires authentication. */
   localDemo?: boolean
   timeoutMs?: number
+  heartbeatIntervalMs?: number
 }
 
 function equal(a: string, b: string): boolean {
@@ -32,6 +34,9 @@ export interface A2AServer {
 }
 
 export function createA2AServer(options: ServerOptions, runner: Runner): A2AServer {
+  if (options.heartbeatIntervalMs !== undefined && (!Number.isSafeInteger(options.heartbeatIntervalMs) || options.heartbeatIntervalMs < 50)) {
+    throw new Error('heartbeatIntervalMs must be an integer of at least 50ms')
+  }
   const publicUrl = httpUrl(options.publicUrl)
   if (publicUrl.pathname !== '/') throw new Error('publicUrl must be an origin without a path')
   const principals = (options.principals ?? []).map(p => ({ ...p, token: envSecret(p.tokenEnv)! }))
@@ -45,7 +50,10 @@ export function createA2AServer(options: ServerOptions, runner: Runner): A2AServ
       { url: `${publicUrl.origin}/a2a`, protocolBinding: 'JSONRPC', protocolVersion: '1.0' },
       { url: `${publicUrl.origin}/a2a`, protocolBinding: 'JSONRPC', protocolVersion: '0.3' },
     ],
-    capabilities: { streaming: true, pushNotifications: false },
+    capabilities: { streaming: true, pushNotifications: false,
+      extensions: [{ uri: HEARTBEAT_EXTENSION, description: 'Structured HEARTBEAT while executing', required: false,
+        params: { intervalMs: options.heartbeatIntervalMs ?? 15000 } }],
+    },
     defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain'],
     skills: [{ id: 'assist', name: options.name, description: options.description, tags: ['assistant', options.role] }],
     ...(options.localDemo ? {} : {
@@ -53,7 +61,7 @@ export function createA2AServer(options: ServerOptions, runner: Runner): A2AServ
       securityRequirements: [{ schemes: { bearer: { list: [] } } }],
     }),
   })
-  const executor = new TextExecutor(runner, options.timeoutMs)
+  const executor = new TextExecutor(runner, options.timeoutMs, options.heartbeatIntervalMs)
   const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), executor)
   const app = express()
   app.disable('x-powered-by')

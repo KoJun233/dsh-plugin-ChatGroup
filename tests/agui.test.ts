@@ -11,6 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { A2AClient } from '../src/client.js'
 import { AGUI_EXTENSION, AgUiTraceReader, type AgUiRecord } from '../src/agui.js'
 import { AgUiDshRun } from '../src/agui-dsh.js'
+import { heartbeatArtifact } from '../src/heartbeat.js'
 
 const events = [
   { type: 'RUN_STARTED', runId: 'run', threadId: 'thread' },
@@ -174,7 +175,8 @@ for (const stream of [true, false]) test(`A2A SDK negotiates the extension, deco
   const app = express(); app.use(express.json())
   let origin = '', calls = 0
   const task = (complete: boolean) => ({ id: 'run', contextId: 'thread', status: { state: complete ? 'TASK_STATE_COMPLETED' : 'TASK_STATE_WORKING' },
-    artifacts: [Artifact.toJSON(artifact(complete ? events : events.slice(0, 1))), ...(complete ? [{ artifactId: 'text', parts: [{ text: answer.text }] }] : [])], history: [],
+    artifacts: [Artifact.toJSON(heartbeatArtifact('run', complete ? 2 : 1)),
+      Artifact.toJSON(artifact(complete ? events : events.slice(0, 1))), ...(complete ? [{ artifactId: 'text', parts: [{ text: answer.text }] }] : [])], history: [],
   })
   app.get('/card', (_req, res) => res.json({ name: 'backend', version: '1', capabilities: { streaming: true, extensions: [{ uri: AGUI_EXTENSION }] },
     defaultInputModes: ['text/plain'], defaultOutputModes: ['text/plain', 'application/json'], skills: [],
@@ -192,6 +194,7 @@ for (const stream of [true, false]) test(`A2A SDK negotiates the extension, deco
     const send = (result: unknown) => res.write(`data: ${JSON.stringify({ jsonrpc: '2.0', id, result })}\n\n`)
     send({ task: task(false) })
     events.forEach((event, index) => {
+      send({ artifactUpdate: { taskId: 'run', contextId: 'thread', artifact: Artifact.toJSON(heartbeatArtifact('run', index + 2)), append: false } })
       send({ artifactUpdate: { taskId: 'run', contextId: 'thread', artifact: Artifact.toJSON(artifact([event], index + 1)), append: index > 0 } })
       if (event.type === 'TEXT_MESSAGE_CONTENT') send({ artifactUpdate: { taskId: 'run', contextId: 'thread', append: index > 6,
         artifact: { artifactId: 'text', name: 'conversation_result', parts: [{ text: event.delta }] } } })

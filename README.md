@@ -2,7 +2,7 @@
 
 把 DSH 原生会话扩展成多 Agent 群聊：保留官方输入框、消息流、执行过程与导航，通过 `@成员` 协调本地 Agent 和远端 A2A Agent。
 
-包名为 `dsh-a2a`，当前版本 **0.11.1**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
+包名为 `dsh-a2a`，当前版本 **0.11.4**，实际验证的 DSH 运行时为 **0.2.2-rc.1**。本仓库仅包含源码、测试、必要脚本和项目配置，不包含最小演示 Agent、编译产物或本机运行数据。
 
 ## 会话行为
 
@@ -31,19 +31,19 @@ npm run build
 npm pack
 ```
 
-构建生成 `dist/`，打包生成 `dsh-a2a-0.11.1.tgz`；两者均不提交 Git。
+构建生成 `dist/`，打包生成 `dsh-a2a-0.11.4.tgz`；两者均不提交 Git。
 
 macOS DMG 版使用应用自带的 CLI 安装到 `desktop` profile：
 
 ```sh
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add "$PWD/dsh-a2a-0.11.1.tgz"
+  plugin --profile desktop add "$PWD/dsh-a2a-0.11.4.tgz"
 ```
 
 Web 版安装到实际使用的 profile：
 
 ```sh
-dsh plugin --profile web add "$PWD/dsh-a2a-0.11.1.tgz"
+dsh plugin --profile web add "$PWD/dsh-a2a-0.11.4.tgz"
 ```
 
 安装后重新打开 DSH。卸载使用 `dsh plugin --profile desktop remove dsh-a2a`，Web 版将 profile 改为 `web`。
@@ -152,9 +152,30 @@ docker compose up -d --wait nacos
 
 使用官方 `@a2a-js/sdk`，支持 JSON-RPC 的 A2A **1.0 / 0.3**。声明 streaming 能力的服务默认通过 SSE 返回，其他服务使用轮询；保留任务状态、contextId、取消与待补充输入的处理。
 
+出站原生会话将 DSH 主会话 ID 直接作为 A2A `message.contextId`，不再另外发送 `session_id` / `sessionId` 元数据，也不在提示词中拼接 `<member_history>` 或“最新请求”。每次只发送本次用户输入或委派任务，历史上下文由远端按 contextId 维护。新分支使用自己的 DSH 会话 ID；旧上下文的待补充任务不跨上下文续接。
+
 `dsh-a2a/server` 是可选入站插件，默认客户端包配置不会启用它。在自己的 Cordis 配置中显式启用时，需要设置 `publicUrl`、已有模型路由，以及通过 `tokenEnv` 绑定可信身份的 `principals`。`allowedTools` 默认空；可通过 `registryConfigFile` 将 Card 发布到所有启用的 Nacos 注册中心。每个入站任务使用独立会话，结束后释放。
 
 个人身份可调用个人或业务 Agent；业务身份不能主动调用个人 Agent。Nacos 负责发现，不提供 NAT 穿透；跨网络连接仍需已有网络通道。
+
+## 心跳与等待超时
+
+客户端采用统一的**远端推送 HEARTBEAT**约定，不新增主动 Ping、`GetTask` 保活或其他心跳格式的兼容分支。正常 A2A 进度或有效心跳刷新空闲计时；心跳不显示在回答正文或工具记录里。
+
+- `timeoutMs`：出站调用的**连续无进度/有效心跳超时**，默认 60000ms，不再是整次调用总时长。已有桌面配置无需修改即可使用新语义。
+- `maxDurationMs`：独立的整次出站调用上限，默认 `0`（不限制），可设为例如 `1800000`（30 分钟）。有效心跳不能绕过此上限；用户仍可随时停止。
+- 远端在执行期间每 15 秒推送一次结构化心跳，结束、失败或取消后停止。没有正文输出的长工具执行也必须发送，不能依赖模型输出触发。
+- 超时分别报告 `A2A idle timeout` 或 `A2A max duration exceeded`，调用方取消报告 `A2A cancelled by caller`。超时/取消后仍尝试取消原 taskId；只有响应状态确认为 CANCELED 才标记 `remoteCancellation=confirmed`，否则为 `unknown`。
+- 非流式调用沿用原有状态查询流程，没有新增后台探活；单独的 `get` / `cancel` 仍使用单次请求超时。
+
+```json
+{
+  "timeoutMs": 60000,
+  "maxDurationMs": 1800000
+}
+```
+
+以上仅为需合并到现有 `a2a.config.json` 的超时字段，不要覆盖现有 Agent / Nacos 配置。远端接入要求、完整事件样例和 Java 发送示例见 [心跳协议](docs/heartbeat.md)。本插件的入站/演示执行器也发送同一心跳（`heartbeatIntervalMs` 默认 15000）；其 `timeoutMs` 仍是**服务端自身执行预算**，与出站客户端空闲超时独立，客户端心跳不会绕过远端执行上限。
 
 ## 远端 AG-UI 转换与原生展示
 
@@ -163,6 +184,8 @@ docker compose up -d --wait nacos
 转换器仅接收数据，不创建新消息卡片。`TEXT_MESSAGE_*` 转为原生正文流，`REASONING_MESSAGE_*` 转为原生思考块，`TOOL_CALL_START/ARGS/END/RESULT` 转为原生工具调用和结果记录。工具参数结束不代表执行结束，界面会等待真实结果；一次远端 HTTP 执行可以形成多个原生模型步骤，并保留在该成员自己的会话中，供官方对话组件与轨迹组件实时显示和历史重放。顾问 @成员与用户直接 @成员使用相同转换路径。
 
 远端会话使用独立的工具记录消费者，工具名显示为 `a2a.<远端工具名>`。消费者只匹配本次远端声明的调用并记录远端结果，不进入本地工具查找、授权或执行流程，也不会因工具同名而使用本地工具的专用渲染。真正的业务工具及权限由远端服务管理。AG-UI 正文已经用于显示时，A2A 的 `conversation_result` 仅作为兼容结果，不再输出第二份正文。
+
+远端工具消费者会在新建会话、桌面独立恢复会话以及插件加载时恢复已有远端成员的作用域绑定；复用已运行成员也会补齐绑定。这样重启或恢复会话后，远端 `a2a.*` 工具记录仍由对应远端执行流消费，不会误交给本地执行器而报 `unknown tool`。作用域随所属 Agent / 插件释放，消费者不会执行同名本地工具。
 
 首版转换上述显式 start/content/end 生命周期事件。状态快照、自定义事件、activity、嵌套子 Agent 及加密推理暂不映射；chunk 简写事件需要服务端展开为对应生命周期事件。工具结果中的非文本结构按 JSON 文本保留，不自动加载媒体。未提供的 token 用量不补造。远端取消能否真正停止执行仍取决于服务端的 `CancelTask` 实现。
 

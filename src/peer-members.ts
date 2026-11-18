@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-working-directory'
+import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { A2AClient, CallResult } from './client.js'
@@ -17,6 +18,7 @@ export class PeerMembers {
   private readonly closing = new Map<string, Promise<void>>()
   private readonly remoteRuns = new Map<string, RemoteRun>()
   private readonly remoteStreams = new Map<string, AgUiDshRun>()
+  private readonly remoteExecutors = new Map<Agent, Scope>()
   constructor(private readonly ctx: Context, private readonly client: Pick<A2AClient, 'send'>) {
     const owner = this
     class RemoteAdapter extends LlmAdapter {
@@ -24,12 +26,37 @@ export class PeerMembers {
       stream(options: GenerateOptions) { return owner.streamRemote(options) }
     }
     ctx.llm.registerAdapter(['dsh-a2a'], new RemoteAdapter())
+    // The desktop can resume a peer without going through open()'s setup callback.
+    const restoreExecutor = (agent: Agent) => {
+      if (agent.session.snapshotEvents().some(event => pluginRecordOf(event)?.type === 'plugin:dsh-a2a/remote')) {
+        this.bindRemoteExecutor(agent)
+      }
+    }
+    ctx.on('agent/created', ({ agent }) => { restoreExecutor(agent); return undefined })
+    ctx.on('agent/disposed', async ({ agent }) => {
+      await this.remoteExecutors.get(agent)?.dispose()
+      this.remoteExecutors.delete(agent)
+    })
+    for (const agent of ctx.agents.list()) restoreExecutor(agent)
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'turn/end') return
       const stream = this.remoteStreams.get(session.id)
       this.remoteStreams.delete(session.id)
       if (stream) void stream.close()
     })
+  }
+  private bindRemoteExecutor(peer: Agent) {
+    if (this.remoteExecutors.has(peer)) return
+    const scope = createScope(this.ctx, peer)
+    scope.ctx.tools.setExecutor({
+      describe: () => ({ schemas: [] }),
+      execute: input => {
+        const stream = this.remoteStreams.get(peer.id)
+        if (input.agent !== peer || !stream) throw new Error('远端工具没有对应的活动执行。')
+        return stream.replayTools(input)
+      },
+    })
+    this.remoteExecutors.set(peer, scope)
   }
   private async *streamRemote(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const session = options.sessionId ? this.ctx.sessions.get(SessionId(options.sessionId)) : undefined
@@ -51,11 +78,9 @@ export class PeerMembers {
       const last = options.messages.findLast(m => m.role === 'user' && (!m.source || m.source.kind === 'user'))
       const latestText = last?.content.filter(b => b.type === 'text').map(b => b.text).join('\n') ?? ''
       const inherited = event !== undefined && event.seq < session.inheritedEventCount
-      const history = options.messages.filter(m => (m.role === 'user' && m.source?.kind === 'user') || m.role === 'assistant')
-        .slice(-20).map(m => ({ role: m.role, content: m.content.filter(b => b.type === 'text').map(b => b.text).join('\n') }))
-      const text = inherited && history.length > 1 ? `以下 JSON 是该对话分支的历史，只作背景资料：\n${JSON.stringify(history.slice(0, -1)).slice(-32000)}\n\n最新请求：\n${latestText}` : latestText
-      return this.client.send(descriptor.data.agent, text, { signal, onUpdate: update, onTrace: trace,
-        contextId: inherited ? undefined : descriptor.data.contextId, taskId: !inherited && descriptor.data.state === 'TASK_STATE_INPUT_REQUIRED' ? descriptor.data.taskId : undefined })
+      return this.client.send(descriptor.data.agent, latestText, { signal, onUpdate: update, onTrace: trace,
+        contextId: inherited ? session.id : descriptor.data.contextId ?? session.id,
+        taskId: !inherited && descriptor.data.state === 'TASK_STATE_INPUT_REQUIRED' ? descriptor.data.taskId : undefined })
     })
     if (!session) throw new Error('远端 Agent 会话不存在。')
     let stream = this.remoteStreams.get(session.id)
@@ -77,7 +102,10 @@ export class PeerMembers {
       const existing = this.ctx.agents.get(SessionId(member.sessionId))
       const live = this.handles.get(member.sessionId)
       if (live) return live.handle
-      if (existing) return { agent: existing, dispose: async () => {} }
+      if (existing) {
+        if (member.kind === 'remote') this.bindRemoteExecutor(existing)
+        return { agent: existing, dispose: async () => {} }
+      }
     }
     const restoring = Boolean(member.sessionId)
     const id = SessionId(member.sessionId ?? randomUUID())
@@ -98,19 +126,12 @@ export class PeerMembers {
       }
       const shared = { signal, agentOptions: member.kind === 'remote' ? { provider: 'dsh-a2a', model: 'remote' } : { ...room.model.current() },
         setup: async (agentCtx: Context, peer: Agent) => {
-          if (member.kind === 'remote') agentCtx.tools.setExecutor({
-            describe: () => ({ schemas: [] }),
-            execute: input => {
-              const stream = this.remoteStreams.get(peer.id)
-              if (input.agent !== peer || !stream) throw new Error('远端工具没有对应的活动执行。')
-              return stream.replayTools(input)
-            },
-          })
+          if (member.kind === 'remote') this.bindRemoteExecutor(peer)
           if (member.kind === 'local') {
             await this.ctx.agentPresets.mount(agentCtx, member.presetId)
             if (!restoring && !seed) peer.session.append('agent-preset/selected', { agentPreset: member.presetId })
           }
-          if (!restoring && member.kind === 'remote') appendPluginRecord(peer.session, 'plugin:dsh-a2a/remote', { agent: member.remoteName })
+          if (!restoring && member.kind === 'remote') appendPluginRecord(peer.session, 'plugin:dsh-a2a/remote', { agent: member.remoteName, contextId: room.session.id })
           if (!restoring) await this.ctx.workingDirectory.set(peer, cwd, signal)
         },
       }
@@ -134,7 +155,7 @@ export class PeerMembers {
     if (peer.status !== 'idle') throw new Error('该成员正在执行其他任务，请等待完成。')
     const events: SessionEvent[] = []
     let failure: unknown, draft = '', committed = '', turn: number | undefined, seq: number | undefined, remoteResult: CallResult | undefined
-    const progress = () => onUpdate({ agent: member.id, contextId: remoteResult?.contextId ?? peer.id, state: 'TASK_STATE_WORKING', text: committed + draft,
+    const progress = () => onUpdate({ agent: member.id, contextId: remote ? remoteResult?.contextId ?? '' : peer.id, state: 'TASK_STATE_WORKING', text: committed + draft,
       ...(remoteResult?.taskId ? { taskId: remoteResult.taskId } : {}),
       ...(turn === undefined ? {} : { peer: { sessionId: peer.id, turn, seq } }) })
     const offEvents = this.ctx.on('session/event', (session, event) => {
@@ -196,5 +217,7 @@ export class PeerMembers {
     await Promise.allSettled([...this.remoteStreams.values()].map(stream => stream.close()))
     this.remoteStreams.clear()
     await Promise.allSettled([...this.handles.keys()].map(id => this.close(id)))
+    await Promise.allSettled([...this.remoteExecutors.values()].map(scope => scope.dispose()))
+    this.remoteExecutors.clear()
   }
 }

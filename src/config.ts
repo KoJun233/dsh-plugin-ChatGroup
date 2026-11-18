@@ -38,7 +38,10 @@ export interface NacosSource extends NacosConfig {
 }
 export interface A2AConfig {
   role: AgentRole
+  /** Outbound send idle timeout; renewed by progress or a valid pushed HEARTBEAT. */
   timeoutMs: number
+  /** Optional hard limit for one outbound call; zero/omitted means no total limit. */
+  maxDurationMs?: number
   pollIntervalMs: number
   agents: AgentEntry[]
   nacos?: NacosConfig
@@ -52,6 +55,7 @@ const nacosConfig = z.object({
 export const FileConfig = z.object({
   role: role.default('personal'),
   timeoutMs: z.number().min(100).max(600000).default(60000),
+  maxDurationMs: z.number().int().min(0).max(86400000).default(0),
   pollIntervalMs: z.number().min(50).max(30000).default(500),
   agents: z.array(z.object({
     name: z.string(), role,

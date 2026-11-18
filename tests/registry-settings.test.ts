@@ -29,7 +29,7 @@ test('first-run configuration can be created; disabling discovery preserves dire
     const saved = await f.settings.save({ revision: initial.revision, ...RegistryDraft.parse({ nacos: { serverUrl: 'http://127.0.0.1:8848/nacos' } }) })
     assert.equal(f.client.nacos?.config.serverUrl, saved.nacos?.serverUrl)
     assert.equal((await stat(f.path)).mode & 0o777, 0o600)
-    const raw = { ...JSON.parse(await readFile(f.path, 'utf8')), role: 'business', timeoutMs: 12345, pollIntervalMs: 100,
+    const raw = { ...JSON.parse(await readFile(f.path, 'utf8')), role: 'business', timeoutMs: 12345, maxDurationMs: 1800000, pollIntervalMs: 100,
       agents: [{ name: 'direct', role: 'business', cardUrl: 'https://agent.example/card', tokenEnv: 'A2A_DIRECT_TOKEN' }], futureOption: { keep: true } }
     await writeFile(f.path, JSON.stringify(raw))
     const latest = await f.settings.configuration()
@@ -39,6 +39,7 @@ test('first-run configuration can be created; disabling discovery preserves dire
     assert.equal(f.client.nacos, undefined)
     assert.deepEqual((await f.client.list()).map(a => a.name), ['direct'])
     assert.equal(f.client.config.timeoutMs, 12345)
+    assert.equal(f.client.config.maxDurationMs, 1800000)
     const reopened = new A2AClient(parseConfig({}))
     await new RegistrySettings(f.path, reopened).configuration()
     assert.deepEqual(reopened.config, f.client.config)
