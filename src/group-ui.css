@@ -141,6 +141,7 @@
 .a2am-signed[data-gutter] > .a2am-author { position: absolute; top: -2px; right: calc(100% + 16px); width: 112px; margin-bottom: 0; }
 .a2am-answer[data-gutter] > .a2am-author { top: 6px; }
 .a2am-reply-body { min-width: 0; }
+.a2am-delegation-text { margin: 0; color: var(--dsw-alias-label-primary); font-size: var(--dsh-content-font-size, 14px); line-height: calc(24px + var(--dsh-content-font-delta, 0px)); white-space: pre-wrap; overflow-wrap: anywhere; }
 .a2am-stream-status { margin-bottom: 6px; }
 .a2am-mention { color: var(--dsw-alias-state-business-primary); font: inherit; }
 

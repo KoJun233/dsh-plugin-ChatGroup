@@ -3,15 +3,19 @@ import { test } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
-import { createAssistantMessage, createUserMessage, LlmAdapter, LlmRuntime, markAgentLoopRequest, type GenerateOptions, type RequestMessage, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage, ToolCallId, LlmAdapter, LlmRuntime, markAgentLoopRequest, type GenerateOptions, type RequestMessage, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { buildForkSeed, Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import { GroupRoom, type GroupRecord, type ConversationMember } from '../src/group.js'
 import { GroupRuntime } from '../src/group-runtime.js'
 import { MemberSelection, groupRemote } from '../src/group-contract.js'
-import { administratorDispatch, memberMentions, routeMemberMessage } from '../src/group-routing.js'
-import type { CallResult, SendOptions } from '../src/client.js'
+import { memberMentions, routeMemberMessage } from '../src/group-routing.js'
+import { A2AClient, type CallResult, type SendOptions } from '../src/client.js'
+import { parseConfig } from '../src/config.js'
+import Tools from '@deepseek-ai/dsh-tools'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { memberDelegationTool, registerMemberDelegation } from '../src/group-tool.js'
 
 const members: ConversationMember[] = [
   { id: 'story-assistant', name: '故事助手', kind: 'remote', remoteName: 'story-assistant', description: '故事创作' },
@@ -23,7 +27,7 @@ function roomFixture() {
   const store = { read: () => records, append: (record: GroupRecord) => { records.push(record) } }
   return { room: new GroupRoom(store), records, store }
 }
-function runtimeFixture(send: (name: string, text: string, options?: SendOptions) => Promise<CallResult>, session = Session.create(SessionId(crypto.randomUUID()))) {
+function runtimeFixture(send: (name: string, text: string, options?: SendOptions) => Promise<CallResult>, session = Session.create(SessionId(crypto.randomUUID())), client?: A2AClient) {
   const ctx = new Context()
   new LlmRuntime(ctx)
   let respond: (messages: RequestMessage[]) => string = () => ''
@@ -36,15 +40,16 @@ function runtimeFixture(send: (name: string, text: string, options?: SendOptions
     }
   }
   ctx.llm.registerAdapter(['test'], new AdvisorAdapter())
-  ctx.provide('systemPrompt', { context() { return () => {} } })
+  ctx.provide('systemPrompt', { context() { return () => {} }, tools() { return () => {} } })
   ctx.provide('agentPresets', { list: async () => [] })
   ctx.provide('sessions', { flush: async () => true })
   const followups: UserMessage[] = []
   const agent = { id: session.id, session, status: 'idle', followup: (m: UserMessage) => followups.push(m) } as unknown as Agent
-  ctx.provide('agents', { get: (id: string) => id === agent.id ? agent : undefined })
+  ctx.provide('agents', { get: (id: string) => id === agent.id ? agent : undefined, list: () => [agent] })
   const scope = createScope(ctx, agent)
   Object.assign(agent, { ctx: scope.ctx })
-  const runtime = new GroupRuntime(ctx, { list: async () => [], send }, {
+  if (client) client.send = send
+  const runtime = new GroupRuntime(ctx, client ?? { list: async () => [], send }, {
     ask: async (_room, _member, _text, signal, update, _save, remote) => {
       assert.ok(remote, 'remote members execute through the native peer adapter')
       return remote(signal, update)
@@ -88,13 +93,11 @@ test('any-position mentions route directly, preserve native references and keep 
   assert.match((routeMemberMessage('请@OA助手查年假', [members[0]], members) as { text: string }).text, /尚未加入/)
 })
 
-test('main dispatch requires an explicit leading joined member and preserves spaced names', () => {
+test('user mentions preserve spaced names and ignore file references', () => {
   const roster = [...members, { id: 'local:english', name: 'English Practice' }]
-  assert.deepEqual(administratorDispatch('  @English Practice hello  ', roster), { member: 'local:english', text: 'hello' })
-  assert.deepEqual(administratorDispatch('@故事助手 写故事', roster), { member: 'story-assistant', text: '写故事' })
-  for (const text of ['我建议 @故事助手 写故事', '@故事助手', '@English Practice/file.ts', '```\n@故事助手 写故事\n```', '@unknown 任务']) assert.equal(administratorDispatch(text, roster), undefined)
   const text = '请 @English Practice hello，再 @故事助手写故事'
   assert.deepEqual(memberMentions(text, roster).map(m => text.slice(m.start, m.end)), ['@English Practice', '@故事助手'])
+  assert.deepEqual(routeMemberMessage('@English Practice/file.ts', roster), { kind: 'main', members: [] })
   assert.deepEqual(routeMemberMessage('请 @English Practice hello', roster), { kind: 'direct', member: 'local:english', text: '请  hello' })
 })
 
@@ -144,7 +147,23 @@ async function prepare(f: ReturnType<typeof runtimeFixture>, messages: UserMessa
   return decision.messages
 }
 
-async function runTurn(f: ReturnType<typeof runtimeFixture>, messages: UserMessage[], turn: number, model: (history: RequestMessage[]) => string, usePrepared = true) {
+type Dispatch = { memberId: string; task: string }
+async function enableDelegation(f: ReturnType<typeof runtimeFixture>) {
+  await f.ctx.plugin(Tools)
+  await f.ctx.plugin(NativeExecutor)
+  registerMemberDelegation(f.ctx, f.runtime)
+}
+async function executeDelegation(f: ReturnType<typeof runtimeFixture>, args: unknown, signal: AbortSignal) {
+  const toolSet = await f.ctx.tools.resolve({ agent: f.agent, modelSelection: { provider: 'test', model: 'advisor' }, signal })
+  try {
+    const [outcome] = (await f.ctx.tools.execute({ agent: f.agent, signal, toolSet,
+      calls: [{ type: 'tool-call', id: ToolCallId(crypto.randomUUID()), name: memberDelegationTool, arguments: JSON.stringify(args) }],
+    })).results
+    return outcome.result
+  } finally { toolSet.dispose() }
+}
+
+async function runTurn(f: ReturnType<typeof runtimeFixture>, messages: UserMessage[], turn: number, model: (history: RequestMessage[]) => string | Dispatch, usePrepared = true) {
   const signal = new AbortController().signal
   const session = f.agent.session
   session.append('turn/start', { turn })
@@ -155,10 +174,23 @@ async function runTurn(f: ReturnType<typeof runtimeFixture>, messages: UserMessa
   const prepared = usePrepared ? await f.ctx.llm.prepareCall(config, signal) : undefined
   const request = markAgentLoopRequest(Object.freeze({ ...prepared?.config ?? config, messages: history, sessionId: session.id, signal }))
   let modelError: unknown
-  f.replyWith(messages => { try { return model(messages) } catch (error) { modelError = error; throw error } })
+  let dispatch: Dispatch | undefined
+  f.replyWith(messages => { try {
+    const reply = model(messages)
+    if (typeof reply === 'string') return reply
+    dispatch = reply
+    return ''
+  } catch (error) { modelError = error; throw error } })
   for await (const chunk of prepared ? prepared.stream(request) : f.ctx.llm.stream(request)) {
     if (modelError) throw modelError
     if (chunk.type === 'finish') assert.equal(chunk.reason.kind, 'stop')
+  }
+  if (dispatch) {
+    const result = await executeDelegation(f, dispatch, signal)
+    assert.equal(result.isError, false, JSON.stringify(result))
+    assert.equal(result.concludesTurn, true)
+    assert.deepEqual(result.value, { status: 'queued', memberId: dispatch.memberId,
+      memberName: f.runtime.room(session).members.find(m => m.id === dispatch!.memberId)?.name })
   }
   await agentEvents(f.ctx, f.agent).serial('agent/turn-stopping', { signal, turn })
   const event = session.append('turn/end', { turn, reason: { kind: 'completed' } })
@@ -166,15 +198,16 @@ async function runTurn(f: ReturnType<typeof runtimeFixture>, messages: UserMessa
 }
 
 test('direct @ history reaches the prepared advisor as a signed assistant message in order and is never persisted twice', async () => {
-  const oldTask = '为什么DEMO-0025没有绑定流水'
-  const newTask = '在帮我看看 DEMO-0006为什么通过不了'
-  const publicReply = '0025 未匹配到公司流水。'
+  const oldTask = '为什么示例工单 CASE-DEMO-A 没有关联附件？'
+  const newTask = '再帮我看一下示例工单 CASE-DEMO-B 为什么未通过校验。'
+  const publicReply = 'CASE-DEMO-A 缺少必填附件。'
   const requests: { text: string; contextId?: string }[] = []
   const f = runtimeFixture(async (name, text, options) => {
     requests.push({ text, contextId: options?.contextId })
-    return answer(name, text === oldTask ? publicReply : '0006 已核查。')
+    return answer(name, text === oldTask ? publicReply : 'CASE-DEMO-B 已核查。')
   })
   try {
+    await enableDelegation(f)
     f.runtime.room(f.agent.session).add({ id: 'direct:DEMO_REVIEWER', name: 'DEMO_REVIEWER', kind: 'remote', remoteName: 'DEMO_REVIEWER', description: '审批' })
     await runTurn(f, [userMessage(`@DEMO_REVIEWER ${oldTask}`)], 1, () => assert.fail('direct @ must bypass the advisor model'))
     // Pre-step waits for the member even if the user queued their next question.
@@ -185,15 +218,72 @@ test('direct @ history reaches the prepared advisor as a signed assistant messag
       assert.deepEqual(history[1].source, { kind: 'model', provider: 'dsh-a2a', model: 'member' })
       assert.equal(history[1].id, f.runtime.room(f.agent.session).messages[1].id)
       assert.deepEqual(f.agent.session.deriveMessages().map(m => m.role), ['user', 'user'], 'projection only affects the request')
-      return '@DEMO_REVIEWER 只查 DEMO-0006 为什么无法通过审核'
+      return { memberId: 'direct:DEMO_REVIEWER', task: '只查 CASE-DEMO-B 未通过校验的原因。' }
     })
     await runTurn(f, [userMessage('继续')], 3, history => {
-      assert.deepEqual(history.filter(memberReply).map(messageText), [`DEMO_REVIEWER：\n${publicReply}`, 'DEMO_REVIEWER：\n0006 已核查。'])
+      assert.deepEqual(history.filter(memberReply).map(messageText), [`DEMO_REVIEWER：\n${publicReply}`, 'DEMO_REVIEWER：\nCASE-DEMO-B 已核查。'])
       return '已看过两条答复。'
     }, false)
-    assert.deepEqual(requests, [oldTask, '只查 DEMO-0006 为什么无法通过审核'].map(text => ({ text, contextId: f.agent.session.id })))
+    assert.deepEqual(requests, [oldTask, '只查 CASE-DEMO-B 未通过校验的原因。'].map(text => ({ text, contextId: f.agent.session.id })))
     assert.deepEqual(f.runtime.room(f.agent.session).messages.filter(m => m.role === 'dispatch').map(m => m.author), ['用户', '顾问'])
     assert.deepEqual(f.followups, [], 'success must not wake the advisor')
+  } finally { await f.dispose() }
+})
+
+test('explicit direct identity migration updates a live room without replacing its peer, pending task or history', async () => {
+  const role = 'business' as const
+  const direct = { name: 'demo_review', role, cardUrl: 'https://agent.example/card' }
+  const client = new A2AClient(parseConfig({ agents: [direct] }))
+  const sent: { address: string; text: string; taskId?: string; contextId?: string }[] = []
+  const f = runtimeFixture(async (address, text, options) => {
+    sent.push({ address, text, taskId: options?.taskId, contextId: options?.contextId })
+    return answer(address, '已处理')
+  }, undefined, client)
+  try {
+    const { session } = f.agent
+    const room = f.runtime.room(session)
+    const old = { kind: 'remote' as const, id: 'direct:demo_review', remoteName: 'direct:demo_review', name: 'demo_review', description: '', sessionId: 'original-peer' }
+    room.add(old)
+    const reply = room.message('member', old.id, '需要补资料', { authorName: old.name, state: 'input-required', contextId: session.id, taskId: 'same-task' })
+    client.reconfigure(parseConfig({ agents: [{ ...direct, name: '审核助手', agentId: 'fixture-remote-id', legacyNames: [direct.name] }] }))
+    const stable = 'direct:id:fixture-remote-id'
+    assert.equal(room.members.find(m => m.id === stable)?.name, '审核助手')
+    assert.equal(room.members.find(m => m.id === stable)?.sessionId, 'original-peer')
+    assert.equal(room.members.some(m => m.id === old.id), false)
+    assert.deepEqual(room.messages[0], reply, 'old signature and reply untouched')
+    await runTurn(f, [userMessage('@审核助手 补充资料')], 1, () => assert.fail('a new name still routes directly'))
+    await prepare(f, [], 2, new AbortController().signal)
+    assert.deepEqual(sent, [{ address: stable, text: '补充资料', taskId: 'same-task', contextId: session.id }])
+    assert.equal(room.messages.at(-1)?.authorName, '审核助手')
+  } finally { await f.dispose() }
+})
+
+test('delegation rejects unknown IDs and waits for a successful parent turn; text alone cannot dispatch', async () => {
+  const sent: string[] = []
+  const f = runtimeFixture(async (name, text) => { sent.push(text); return answer(name, 'done') })
+  try {
+    await enableDelegation(f)
+    await runTurn(f, [userMessage('仅显示说明')], 1, () => '@故事助手 不要把这句话发送出去')
+    const signal = new AbortController().signal
+    assert.deepEqual(sent, [])
+    for (const args of [{ memberId: 'unjoined', task: 'task' }, { memberId: '故事助手', task: 'task' }, { memberId: 'story-assistant', task: '   ' }]) {
+      assert.equal((await executeDelegation(f, args, signal)).isError, true)
+    }
+    const { session } = f.agent
+    session.append('turn/start', { turn: 2 })
+    assert.equal((await executeDelegation(f, { memberId: 'story-assistant', task: '会取消的任务' }, signal)).concludesTurn, true)
+    assert.equal((await executeDelegation(f, { memberId: 'oa', task: '不能发第二单' }, signal)).isError, true)
+    await agentEvents(f.ctx, f.agent).serial('agent/turn-stopping', { turn: 2, signal })
+    assert.deepEqual(sent, [], 'tool result and stopping hook alone cannot execute remote work')
+    const canceled = session.append('turn/end', { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+    f.ctx.emit('session/event', session, canceled)
+    await prepare(f, [], 3, signal)
+    assert.deepEqual(sent, [])
+    await runTurn(f, [userMessage('安排一下')], 3, () => ({ memberId: 'story-assistant', task: '只发送这条' }))
+    await prepare(f, [], 4, signal)
+    assert.deepEqual(sent, ['只发送这条'])
+    for (const m of f.runtime.room(session).members) f.runtime.room(session).remove(m.id)
+    assert.equal((await executeDelegation(f, { memberId: 'story-assistant', task: '已移除' }, signal)).isError, true)
   } finally { await f.dispose() }
 })
 
@@ -303,14 +393,15 @@ test('ordered multi-member handoff shares the prior assistant reply once and ret
     return answer(name, name === 'oa' ? 'OA已完成' : '故事已完成')
   })
   try {
-    await runTurn(f, [userMessage('请 @故事助手 写故事，@OA助手查年假，最后总结')], 1, () => '@故事助手 写故事')
+    await enableDelegation(f)
+    await runTurn(f, [userMessage('请 @故事助手 写故事，@OA助手查年假，最后总结')], 1, () => ({ memberId: 'story-assistant', task: '写故事' }))
     await prepare(f, [], 2, new AbortController().signal)
     assert.equal(f.followups.length, 1)
     await runTurn(f, [f.followups[0]], 2, history => {
       assert.deepEqual(history.map(m => m.source?.kind), ['user', 'model', 'dsh-a2a/handoff'])
       assert.equal(messageText(history[1]), '故事助手：\n故事已完成')
       assert.doesNotMatch(messageText(history[2]), /故事已完成/)
-      return '@OA助手 查年假'
+      return { memberId: 'oa', task: '查年假' }
     })
     await prepare(f, [], 3, new AbortController().signal)
     assert.equal(f.followups.length, 2)

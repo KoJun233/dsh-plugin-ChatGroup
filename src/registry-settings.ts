@@ -5,7 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService, type TypertRegistryContract } from '@deepseek-ai/dsh-typert-protocol'
 import type { z } from 'zod'
 import { A2AClient } from './client.js'
-import { agentIdentity, canCall, nacosSources, parseConfig } from './config.js'
+import { agentIdentity, directAgentId, canCall, nacosSources, parseConfig } from './config.js'
 import { NacosRegistry } from './nacos.js'
 import { CardProbe, NacosSettings, RegistryDraft, RegistryUpdate, registryHost } from './registry-contract.js'
 
@@ -68,11 +68,21 @@ export class RegistrySettings {
       }
       if (update.agents) {
         const existing = new Map((Array.isArray(current.raw.agents) ? current.raw.agents : []).map(agent => [agent.name, agent]))
-        raw.agents = update.agents.map(agent => {
-          const previous = { ...existing.get(agent.name) }
+        const claimed = new Set<string>()
+        const explicit = new Set(update.agents.flatMap(agent => agent.previousName ? [agent.previousName] : []))
+        raw.agents = update.agents.map(({ previousName, legacyNames, ...agent }) => {
+          // Earlier clients omit previousName. They can update unchanged names,
+          // but must never steal a row explicitly claimed by the new client.
+          const key = previousName === undefined ? (!explicit.has(agent.name) ? agent.name : undefined) : previousName
+          if (previousName && (!existing.has(previousName) || claimed.has(previousName))) throw new Error('直连 Agent 的原配置不匹配，请重新加载。')
+          const previous = key && existing.has(key) ? { ...existing.get(key) } : {}
+          if (key) claimed.add(key)
+          // Retain the previous name for older sessions and @-mentions.
+          const priorNames = new Set<string>(legacyNames ?? previous.legacyNames ?? [])
+          if (previous.name && (!previous.agentId || previous.name !== agent.name)) priorNames.add(previous.name)
           delete previous.tokenEnv
           delete previous.description
-          return { ...previous, ...agent }
+          return { ...previous, ...agent, agentId: previous.agentId ?? randomUUID(), legacyNames: [...priorNames] }
         })
       }
       const config = parseConfig(raw)
@@ -114,7 +124,7 @@ export class RegistrySettings {
       ...sourceResults.flatMap(source => source.agents.map(agent => ({ ...agent,
         id: agentIdentity('nacos', source.id, agent.name), source: { id: source.id, name: source.name, kind: 'nacos' as const } }))),
       ...direct.map((agent, index) => ({ ...results[index].agent, ...agent,
-        id: agentIdentity('direct', 'direct', agent.name), source: { id: 'direct', name: '直连 Card', kind: 'direct' as const },
+        id: directAgentId(agent), source: { id: 'direct', name: '直连 Card', kind: 'direct' as const },
         callable: canCall(this.client.config.role, agent.role), error: results[index].error,
       })),
     ]

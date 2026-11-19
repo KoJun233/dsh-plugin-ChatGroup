@@ -11,7 +11,7 @@ export interface TrajectoryInspection {
 }
 export interface TrajectoryTransfer {
   anchorSeq: number
-  message: { id: string; author: string; authorName?: string; peer?: { sessionId: string; turn: number; seq?: number } }
+  message: { id: string; author: string; authorName?: string; parentTurn?: number; peer?: { sessionId: string; turn: number; seq?: number } }
 }
 export interface TrajectoryAddress { sessionId: string; seq: number; author: string }
 
@@ -28,8 +28,12 @@ export function mergeGroupTrajectory(sessionId: string, main: TrajectoryInspecti
   const images = new WeakMap<object, string>()
   const steps = new Map<number, number>()
   const owningTurn = (transfer: TrajectoryTransfer) => {
-    const node = main.eventNodes.findLast(node => node.seq < transfer.anchorSeq)
-    return node?.turn ?? (node && main.eventLocations.get(node.seq)?.turn?.turn)
+    if (transfer.message.parentTurn !== undefined) return transfer.message.parentTurn
+    // Old records did not carry the parent turn; tool results and other native
+    // records can appear after an assistant step without a turn of their own.
+    const turnOf = (node: NativeRecord) => node.turn ?? main.eventLocations.get(node.seq)?.turn?.turn
+    const node = main.eventNodes.findLast(node => node.seq < transfer.anchorSeq && turnOf(node) !== undefined)
+    return node && turnOf(node)
   }
   const ordered = transfers.filter(transfer => transfer.message.peer).toSorted((a, b) => a.anchorSeq - b.anchorSeq)
   const transferredTurns = new Set(ordered.map(owningTurn).filter(turn => turn !== undefined))

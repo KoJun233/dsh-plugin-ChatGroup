@@ -177,11 +177,39 @@ test('multiple registries and Cards persist together, migrate the singleton and 
     const reopened = new A2AClient(parseConfig({}))
     const snapshot = await new RegistrySettings(f.path, reopened).configuration()
     assert.deepEqual(snapshot.nacosRegistries, saved.nacosRegistries)
-    assert.deepEqual(snapshot.agents, agents)
+    assert.deepEqual(snapshot.agents, [{ ...agents[0], agentId: saved.agents[0].agentId, legacyNames: ['kept'] }])
+    assert.match(saved.agents[0].agentId!, /^[a-f0-9-]{36}$/)
     assert.equal(reopened.nacos?.config.serverUrl, 'http://127.0.0.1:2/nacos')
     const emptied = await f.settings.save({ revision: saved.revision, nacosRegistries: [], agents: [] })
     assert.deepEqual(emptied.nacosRegistries, [])
     assert.deepEqual(await f.client.list(), [])
+  } finally { await f.close() }
+})
+
+test('a direct row keeps its stable ID on rename and claims its old address explicitly', async () => {
+  const role = 'business' as const
+  const old = { name: 'reviewer_old', role, cardUrl: 'https://agent.example/card', custom: 'preserved' }
+  const f = await fixture({ agents: [old] })
+  try {
+    const { revision } = await f.settings.configuration()
+    const oldId = (await f.client.list())[0].id!
+    const first = await f.settings.save({ revision, agents: [{ ...old, name: '审核助手', previousName: old.name }] })
+    const stable = (await f.client.list())[0].id!
+    assert.notEqual(stable, oldId)
+    assert.equal(f.client.resolveDirectBinding(oldId)?.id, stable)
+    assert.equal(f.client.resolveDirectBinding(old.name)?.id, stable)
+    assert.deepEqual(first.agents[0].legacyNames, [old.name])
+    const second = await f.settings.save({ revision: first.revision, agents: [{ ...old, name: '项目助手', previousName: '审核助手' }] })
+    assert.equal((await f.client.list())[0].id, stable)
+    assert.equal(f.client.resolveDirectBinding(oldId)?.id, stable)
+    assert.equal(JSON.parse(await readFile(f.path, 'utf8')).agents[0].custom, 'preserved')
+    await assert.rejects(f.settings.save({ revision: second.revision, agents: [
+      { ...old, name: '项目助手', previousName: '项目助手' }, { ...old, previousName: null },
+    ] }), /旧名称冲突/)
+    const replacement = await f.settings.save({ revision: second.revision, agents: [{ ...old, name: '项目助手', previousName: null }] })
+    assert.notEqual(replacement.agents[0].agentId, second.agents[0].agentId, 'delete/re-add does not claim an existing identity')
+    assert.equal(f.client.resolveDirectBinding(oldId), undefined)
+    await assert.rejects(f.client.connect(stable), /unavailable/)
   } finally { await f.close() }
 })
 
@@ -281,7 +309,7 @@ test('Card preview reads v1 and legacy metadata with scoped auth, without execut
     assert.deepEqual(await f.client.list(), [])
     const entry = { name: 'alias', role: 'business' as const, cardUrl: `${origin}/.well-known/agent-card.json`, tokenEnv: 'A2A_CARD_PREVIEW_TOKEN' }
     await f.settings.save({ revision: initial.revision, ...RegistryDraft.parse({ nacos: { serverUrl: 'http://127.0.0.1:1/nacos' }, agents: [entry] }) })
-    assert.equal((await f.client.send('direct:alias', 'hello')).text, 'direct reply')
+    assert.equal((await f.client.send((await f.client.list())[0].id!, 'hello')).text, 'direct reply')
     assert.equal(calls, 1)
   } finally {
     delete process.env.A2A_CARD_PREVIEW_TOKEN

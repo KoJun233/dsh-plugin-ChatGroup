@@ -32,6 +32,24 @@ test('trajectory merges delegated and direct peers into their originating room t
   assert.equal(main.eventNodes[2].blocks.length, 0, 'historical main records are not rewritten')
 })
 
+test('tool-only advisor delegation keeps the member trace in the recorded parent turn', () => {
+  const main = inspection([
+    { kind: 'assistant', seq: 3, turn: 4, step: 1, blocks: [{ kind: 'tool-call', name: 'delegate_to_member', callId: 'queue' }] },
+    { kind: 'tool-result', seq: 4, callId: 'queue', content: [{ type: 'text', text: 'queued' }] },
+  ])
+  const peer = inspection([{ kind: 'assistant', seq: 8, turn: 1, step: 1, blocks: [{ kind: 'text', text: 'member answer' }] }])
+  const transfer = member(6, 'peer', 1)
+  const peers = new Map([['peer', peer]])
+  // Old room logs still associate transfers even when the last node has no turn.
+  assert.equal(mergeGroupTrajectory('room', main, [transfer], peers).inspection.eventNodes.at(-1)?.turn, 4)
+  transfer.message.parentTurn = 4
+  const result = mergeGroupTrajectory('room', main, [transfer], peers)
+  assert.equal(result.inspection.eventNodes.at(-1)?.step, 2)
+  assert.equal(result.inspection.eventNodes.at(-1)?.turn, 4)
+  assert.equal(result.inspection.eventNodes.at(-1)?.blocks[0].text, 'member answer')
+  assert.equal(result.inspection.eventNodes[1].kind, 'tool-result')
+})
+
 test('trajectory preserves independent timing, request detail, schemas and addressable tool results across colliding ids', () => {
   const main = inspection([{ kind: 'assistant', seq: 3, turn: 1, step: 1, blocks: [{ kind: 'tool-call', callId: 'same', name: 'mainTool' }] }])
   const peer = inspection([

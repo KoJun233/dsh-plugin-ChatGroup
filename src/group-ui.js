@@ -1,6 +1,7 @@
-import { groupRemote } from './group-contract.js'
-import { agentLabel, memberMentions } from './group-routing.js'
+import { groupRemote, memberDelegationTool } from './group-contract.js'
+import { agentLabel, currentMemberName, memberMentions } from './group-routing.js'
 import { nativeUi } from './native-ui.js'
+import { delegationMessage, readDelegationRequest, readDelegationReceipt } from './group-delegation-view.js'
 import { registerGroupTrajectory } from './group-trajectory-ui.js'
 import { registerPeerVisibility } from './peer-visibility-ui.js'
 import { settingAction, settingIcon } from './settings-ui.js'
@@ -27,6 +28,23 @@ export function groupClient(require) {
       const { message, replySeq } = ctx.state
       return { key: ctx.key, kind: 'dsh-a2a-member-answer', id: message.id, target: 'chat', anchorSeq: first.event.seq,
         location: first.location, visibility: 'visible', groupTree: 'turn', data: { ...message, replySeq } }
+    },
+  }
+  const delegationKind = 'dsh-a2a-adviser-delegation'
+  const delegationEvents = {
+    kind: delegationKind, target: 'chat',
+    match: {
+      'tool/call': event => readDelegationRequest(event.data.name, event.data.arguments)
+        ? { id: event.data.callId, role: 'start' } : null,
+      'tool/result': event => event.surfaceOp === 'append' && readDelegationReceipt(event.data.message)
+        ? { id: event.data.message.toolCallId, role: 'update' } : null,
+    },
+    start: (_ctx, { event }) => ({ request: readDelegationRequest(event.data.name, event.data.arguments) }),
+    update: (ctx, { event }) => ({ ...ctx.state, message: delegationMessage(ctx.state?.request, readDelegationReceipt(event.data.message)) }),
+    buildViewNode: ctx => {
+      if (!ctx.state?.message || !ctx.start) return null
+      return { key: ctx.key, kind: delegationKind, id: ctx.id, target: 'chat', anchorSeq: ctx.start.event.seq,
+        location: ctx.start.location, visibility: 'visible', groupTree: 'turn', data: ctx.state.message }
     },
   }
   const rosterEvents = {
@@ -76,11 +94,22 @@ export function groupClient(require) {
       h('div', { className: 'a2am-reply-body' }, children))
   }
 
+  function AdviserDelegation({ node, useA2aMembers }) {
+    const insideMemberReply = useContext(MemberReplyContext)
+    const { memberId, memberName: recordedName, task } = node.data
+    const memberName = useA2aMembers(choose => currentMemberName(choose?.members, memberId)) ?? recordedName
+    if (insideMemberReply) return null
+    return h(SignedReply, { name: '顾问', kind: 'main', 'data-adviser-delegation': '' },
+      h('p', { className: 'a2am-delegation-text' },
+        h('span', { className: 'a2am-mention', 'data-agent-mention': memberName }, `@${memberName}`), ' ', task))
+  }
+
   const peerSlot = 'dsh-a2a.peer-answer'
   const peerFlow = 'dsh-a2a.peer-flow'
-  function MemberAnswer({ node, SessionProvider, renderSlot, retainPeer, watchPeers, forkAt }) {
+  function MemberAnswer({ node, SessionProvider, renderSlot, retainPeer, watchPeers, forkAt, useA2aMembers }) {
     const message = node.data
-    const name = message.authorName || agentLabel(message.author)
+    const currentName = useA2aMembers(choose => currentMemberName(choose?.members, message.author))
+    const name = currentName ?? (message.authorName || agentLabel(message.author))
     const [ready, setReady] = useState(null)
     const [error, setError] = useState('')
     const peer = message.peer
@@ -301,6 +330,7 @@ export function groupClient(require) {
         registerGroupTrajectory(ctx, require, nativeEntry, read)
         registerPeerVisibility(ctx, require, nativeEntry)
         ctx.uiConversation.events.register(memberEvents)
+        ctx.uiConversation.events.register(delegationEvents)
         ctx.uiConversation.events.register(rosterEvents)
         ctx.uiConversation.views.register(rosterView)
         ctx.uiConversation.userText.register({ id: 'dsh-a2a-member', order: 5,
@@ -318,9 +348,15 @@ export function groupClient(require) {
         ctx.slots.inject('conversation.session.header.views.actions', () => ctx.slots.register({ name: 'conversation.session.header.views.actions', id: definition.id,
           inject: () => ({ openSettings: () => ctx.sidebarRight.openTab(definition.kind) }),
         }, SettingsMenuItem))
+        const rosterHooks = sessionId => ({ a2aMembers: ctx.uiConversation.binding(sessionId).target(target) })
+        ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({ name: 'conversation.chat.node', key: delegationKind,
+          inject: sessionId => ({ hooks: rosterHooks(sessionId) }),
+        }, AdviserDelegation))
         ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({ name: 'conversation.chat.node', key: 'dsh-a2a-member-answer',
           children: { [peerSlot]: { kind: 'single', scope: 'session' } },
-          inject: () => ({ retainPeer: id => ctx.sessions.retain(id, { source: 'dsh-a2a-peer-reply' }), watchPeers: listener => ctx.sessions.list.subscribe(listener) }),
+          inject: sessionId => ({ hooks: rosterHooks(sessionId),
+            retainPeer: id => ctx.sessions.retain(id, { source: 'dsh-a2a-peer-reply' }), watchPeers: listener => ctx.sessions.list.subscribe(listener),
+          }),
         }, MemberAnswer))
         const activityTarget = 'dsh-a2a-activity'
         ctx.uiConversation.events.register({ kind: activityTarget, target: activityTarget,
@@ -382,7 +418,7 @@ export function groupClient(require) {
           let closed = false, scheduled = false
           const install = () => {
             if (closed) return
-            for (const key of ['assistant-step', 'user', 'steering', 'turn-process', 'context']) {
+            for (const key of ['assistant-step', 'user', 'steering', 'turn-process', 'context', 'tool-call']) {
               if (installed.has(key)) continue
               const original = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === key)
               if (!original) continue
@@ -391,6 +427,17 @@ export function groupClient(require) {
                 // Hide only legacy recalls: the original signed reply is already on screen.
                 disposers.push(nativeEntry('conversation.chat.node', original, { key, priority: -10 }, (Original, props) =>
                   props.node.data.source?.kind === 'dsh-a2a/member-reply' ? null : h(Original, props)))
+                continue
+              }
+              if (key === 'tool-call') {
+                disposers.push(nativeEntry('conversation.chat.node', original, { key, priority: -10 }, (Original, props) => {
+                  const insideMemberReply = useContext(MemberReplyContext)
+                  const root = props.node.data.root
+                  // Leave errors, approval, pending calls and other tools native.
+                  if (!insideMemberReply && root.kind === 'tool-result' && root.call?.name === memberDelegationTool && !root.subCalls?.length && delegationMessage(
+                    readDelegationRequest(root.call?.name, root.call?.argsRaw), readDelegationReceipt(root))) return null
+                  return h(Original, props)
+                }))
                 continue
               }
               const decorate = (Original, props) => {

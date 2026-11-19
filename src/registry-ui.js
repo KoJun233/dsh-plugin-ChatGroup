@@ -4,7 +4,7 @@ import { settingAction, settingIcon } from './settings-ui.js'
 const toDraft = value => ({
   nacosRegistries: (value?.nacosRegistries ?? []).map(source => ({ id: source.id, name: source.name, enabled: source.enabled !== false,
     serverUrl: source.serverUrl, namespaceId: source.namespaceId ?? 'public', accessTokenEnv: source.accessTokenEnv ?? '' })),
-  agents: (value?.agents ?? []).map((agent, index) => ({ _key: `saved-${index}`, name: agent.name, enabled: agent.enabled !== false,
+  agents: (value?.agents ?? []).map((agent, index) => ({ _key: `saved-${index}`, previousName: agent.name, legacyNames: (agent.legacyNames ?? []).join(', '), name: agent.name, enabled: agent.enabled !== false,
     role: agent.role, cardUrl: agent.cardUrl, description: agent.description ?? '', tokenEnv: agent.tokenEnv ?? '' })),
 })
 const comparable = draft => JSON.stringify({ ...draft, agents: draft.agents.map(({ _key, ...agent }) => agent) })
@@ -15,7 +15,8 @@ const nacosInput = source => NacosSettings.parse({ serverUrl: source.serverUrl, 
 const toInput = draft => RegistryDraft.parse({
   nacosRegistries: draft.nacosRegistries.map(({ accessTokenEnv, ...source }) => ({ ...source,
     ...(accessTokenEnv.trim() ? { accessTokenEnv: accessTokenEnv.trim() } : {}) })),
-  agents: draft.agents.map(({ _key, tokenEnv, description, ...agent }) => ({ ...agent,
+  agents: draft.agents.map(({ _key, tokenEnv, description, legacyNames, ...agent }) => ({ ...agent,
+    legacyNames: legacyNames.split(/[,，]/u).map(name => name.trim()).filter(Boolean),
     ...(tokenEnv.trim() ? { tokenEnv: tokenEnv.trim() } : {}),
     ...(description.trim() ? { description: description.trim() } : {}) })),
 })
@@ -229,7 +230,7 @@ export function registryClient(require) {
         newField.current = `nacosRegistries-${draft.nacosRegistries.length}-serverUrl`
         replace('nacosRegistries', [...draft.nacosRegistries, source]); setEditingRegistry(source.id)
       } else {
-        const agent = { _key: `new-${sequence.current++}`, enabled: true, name: '', cardUrl: '', description: '', role: 'personal', tokenEnv: '' }
+        const agent = { _key: `new-${sequence.current++}`, previousName: null, legacyNames: '', enabled: true, name: '', cardUrl: '', description: '', role: 'personal', tokenEnv: '' }
         newField.current = `agents-${draft.agents.length}-cardUrl`
         replace('agents', [...draft.agents, agent]); setEditing(agent._key)
       }
@@ -311,6 +312,7 @@ export function registryClient(require) {
                   h('label', { className: 'a2ar-field' }, h('span', null, 'Agent 类型'), h('select', { className: 'a2am-search', name: `agents-${index}-role`, value: agent.role, disabled: busy, onChange: e => changeItem('agents', agent._key, 'role', e.target.value) },
                     h('option', { value: 'personal' }, '个人 Agent'), h('option', { value: 'business' }, '业务 Agent')))),
                 field('agents', agent, index, 'description', '描述（选填）'),
+                field('agents', agent, index, 'legacyNames', '旧名称（迁移用）', '多个旧名称用逗号分隔', '仅为同一个 Agent 填写它曾用的名称，以恢复旧会话绑定。'),
                 field('agents', agent, index, 'tokenEnv', '访问令牌环境变量（选填）', 'A2A_AGENT_TOKEN', '只填写变量名，Token 由宿主进程读取。')) : null,
               cardResults[agent._key]?.error ? h('p', { className: 'a2am-error a2ar-source-error', role: 'alert' }, cardResults[agent._key].error) : null,
               openedCard === agent._key && cardResults[agent._key]?.agent && !cardResults[agent._key].error ? h(AgentDetails, { agent: cardResults[agent._key].agent }) : null))),

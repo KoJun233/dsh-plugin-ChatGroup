@@ -5,7 +5,7 @@ import {
   type Task, type Part, type SendMessageResult,
 } from '@a2a-js/sdk'
 import { ClientFactory, DefaultAgentCardResolver, JsonRpcTransportFactory } from '@a2a-js/sdk/client'
-import { agentIdentity, canCall, envSecret, httpUrl, nacosSources, type A2AConfig, type AgentEntry } from './config.js'
+import { agentIdentity, directAgentId, directLegacyIds, canCall, envSecret, httpUrl, nacosSources, type A2AConfig, type AgentEntry } from './config.js'
 import { NacosRegistry } from './nacos.js'
 import { AGUI_EXTENSION, AgUiProtocolError, AgUiTraceReader, type AgUiRecord } from './agui.js'
 import { CallLiveness, CallTimeoutError, HEARTBEAT_ARTIFACT, HeartbeatProtocolError, HeartbeatReader } from './heartbeat.js'
@@ -52,6 +52,7 @@ function pending(task: Task): boolean {
 export class A2AClient {
   /** First active registry, retained for singleton integrations. */
   nacos?: NacosRegistry
+  private readonly configurationListeners = new Set<() => void>()
   constructor(public config: A2AConfig) {
     this.reconfigure(config)
   }
@@ -60,6 +61,26 @@ export class A2AClient {
     this.config = config
     const first = nacosSources(config).find(source => source.enabled !== false)
     this.nacos = first ? new NacosRegistry(first) : undefined
+    for (const listener of this.configurationListeners) listener()
+  }
+
+  onConfigurationChanged(listener: () => void): () => void {
+    this.configurationListeners.add(listener)
+    return () => { this.configurationListeners.delete(listener) }
+  }
+
+  /** Resolve a legacy direct binding without querying Nacos or guessing by URL. */
+  resolveDirectBinding(address: string): AgentEntry | undefined {
+    const qualified = address.startsWith('direct:')
+    if (!qualified && (address.startsWith('nacos:') || nacosSources(this.config).some(s => s.enabled !== false))) return
+    const configured = this.config.agents.find(agent => qualified
+      ? directAgentId(agent) === address || directLegacyIds(agent).includes(address)
+      : (!agent.agentId && agent.name === address) || agent.legacyNames?.includes(address))
+    return configured && this.directEntry(configured)
+  }
+
+  private directEntry(agent: AgentEntry): AgentEntry {
+    return { ...agent, id: directAgentId(agent), source: { id: 'direct', name: '直连 Card', kind: 'direct' } }
   }
 
   async list(signal?: AbortSignal): Promise<AgentEntry[]> {
@@ -81,8 +102,7 @@ export class A2AClient {
       } else for (const agent of result.value) entries.push({ ...agent,
         id: agentIdentity('nacos', source.id, agent.name), source: { id: source.id, name: source.name, kind: 'nacos' } })
     }
-    for (const agent of config.agents.filter(agent => agent.enabled !== false)) entries.push({ ...agent,
-      id: agentIdentity('direct', 'direct', agent.name), source: { id: 'direct', name: '直连 Card', kind: 'direct' } })
+    for (const agent of config.agents.filter(agent => agent.enabled !== false)) entries.push(this.directEntry(agent))
     const allowed = entries.filter(agent => canCall(config.role, agent.role))
     const counts = new Map<string, number>()
     for (const agent of allowed) counts.set(agent.name, (counts.get(agent.name) ?? 0) + 1)
@@ -91,15 +111,14 @@ export class A2AClient {
   }
 
   async connect(name: string, signal?: AbortSignal) {
-    const direct = this.config.agents.find(agent => agentIdentity('direct', 'direct', agent.name) === name
-      && agent.enabled !== false && canCall(this.config.role, agent.role))
+    const direct = name.startsWith('direct:') ? this.resolveDirectBinding(name) : undefined
     const source = nacosSources(this.config).find(source => source.enabled !== false && name.startsWith(`nacos:${source.id}:`))
     // Source-bound calls do not depend on unrelated registries being reachable.
-    const entries = direct ? [{ ...direct, id: name }]
+    const entries = direct ? direct.enabled !== false && canCall(this.config.role, direct.role) ? [direct] : []
       : source ? await new A2AClient({ ...this.config, nacosRegistries: [source], agents: [] }).list(signal)
       : await this.list(signal)
     // Old histories may contain bare names; ambiguous names must never silently retarget.
-    const exact = entries.find(entry => entry.id === name)
+    const exact = direct ? entries[0] : entries.find(entry => entry.id === name)
     const matches = entries.filter(entry => entry.name === name)
     if (!exact && /^(direct|nacos):/.test(name)) throw new Error(`Agent unavailable or disallowed: ${name}`)
     if (!exact && matches.length > 1) throw new Error(`Agent name is ambiguous; select its source: ${name}`)

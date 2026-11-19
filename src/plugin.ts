@@ -8,6 +8,7 @@ import { parseConfig } from './config.js'
 import { RegistryRpc, RegistrySettings } from './registry-settings.js'
 import { progressWriter } from './progress.js'
 import { GroupRpc, GroupRuntime, type GroupContext } from './group-runtime.js'
+import { registerMemberDelegation } from './group-tool.js'
 import { isSuccess, needsInput } from './group.js'
 import { remotePeerProjection } from './peer-visibility-projection.js'
 
@@ -36,6 +37,7 @@ export async function apply(ctx: Context, options: Config): Promise<void> {
   ctx.inject(['agents', 'llm', 'typert', 'typertGateway', 'sessionController', 'systemPrompt', 'agentPresets', 'sessions', 'workingDirectory'], scope => {
     const runtime = new GroupRuntime(scope, client)
     new GroupRpc(scope as GroupContext, runtime)
+    registerMemberDelegation(scope, runtime)
     group = runtime
     scope.effect(() => async () => { group = undefined; await runtime.dispose() })
   })

@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { createTypertRemoteInfo } from '@deepseek-ai/dsh-typert-protocol/remote-info'
 import type { TypertRemoteMethodSpec } from '@deepseek-ai/dsh-typert-protocol'
 
+export const memberDelegationTool = 'delegate_to_member'
+
 export const MemberSelection = z.object({ kind: z.enum(['local', 'remote']), id: z.string().min(1).max(200) }).strict()
 export type MemberSelection = z.infer<typeof MemberSelection>
 const sessionId = z.string().min(1).max(200)

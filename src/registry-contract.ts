@@ -14,6 +14,9 @@ export const CardProbe = z.object({
 })
 export const DirectAgentSettings = CardProbe.extend({
   name: z.string().trim().min(1, '请填写 Agent 名称。').max(200),
+  // Identifies the edited row against the revision supplied with the save.
+  previousName: z.string().min(1).nullable().optional(),
+  legacyNames: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   role: z.enum(['personal', 'business']),
   enabled: z.boolean().optional(),
   description: z.string().trim().max(4000).optional(),

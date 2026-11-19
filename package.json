@@ -1,6 +1,6 @@
 {
   "name": "dsh-a2a",
-  "version": "0.12.2",
+  "version": "0.13.2",
   "description": "Native group conversations for DeepSeek Harness, with local Agents, A2A peers, and Nacos discovery",
   "repository": {
     "type": "git",

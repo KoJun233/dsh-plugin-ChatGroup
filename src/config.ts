@@ -8,6 +8,10 @@ export type AgentRole = 'personal' | 'business'
 export interface AgentEntry {
   /** Stable source-qualified identity; display names may overlap across sources. */
   id?: string
+  /** Immutable identity of a configured direct Agent, independent of its display name. */
+  agentId?: string
+  /** Explicit predecessor names for upgrading name-bound sessions. */
+  legacyNames?: string[]
   displayName?: string
   source?: { id: string; name: string; kind: 'nacos' | 'direct' }
   enabled?: boolean
@@ -59,6 +63,8 @@ export const FileConfig = z.object({
   pollIntervalMs: z.number().min(50).max(30000).default(500),
   agents: z.array(z.object({
     name: z.string(), role,
+    agentId: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/u).optional(),
+    legacyNames: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
     enabled: z.boolean().optional(),
     description: z.string().optional(), cardUrl: z.string(), tokenEnv: z.string().optional(),
   })).default([]),
@@ -83,11 +89,20 @@ export function parseConfig(value: unknown): A2AConfig {
   const result = FileConfig.safeParse(value)
   if (!result.success) throw new Error(`Invalid A2A configuration: ${JSON.stringify(result.error.issues)}`)
   const config = result.data as A2AConfig
-  const names = new Set<string>()
+  const names = new Map<string, AgentEntry>(), idsByAgent = new Set<string>()
   for (const agent of config.agents) {
     httpUrl(agent.cardUrl)
     if (!agent.name.trim() || names.has(agent.name)) throw new Error(`Duplicate/empty Agent name: ${agent.name}`)
-    names.add(agent.name)
+    names.set(agent.name, agent)
+    if (agent.agentId && idsByAgent.has(agent.agentId)) throw new Error(`直连 Agent ID 重复：${agent.agentId}`)
+    if (agent.agentId) idsByAgent.add(agent.agentId)
+  }
+  const former = new Map<string, AgentEntry>()
+  for (const agent of config.agents) for (const alias of agent.legacyNames ?? []) {
+    if ((names.has(alias) && names.get(alias) !== agent) || (former.has(alias) && former.get(alias) !== agent)) {
+      throw new Error(`直连 Agent 旧名称冲突：${alias}`)
+    }
+    former.set(alias, agent)
   }
   if (config.nacos) httpUrl(config.nacos.serverUrl)
   const ids = new Set<string>(), sourceNames = new Set<string>()
@@ -108,6 +123,14 @@ export function agentIdentity(kind: 'direct' | 'nacos', sourceId: string, name: 
   const prefix = kind === 'direct' ? 'direct:' : `nacos:${sourceId}:`
   const encoded = encodeURIComponent(name)
   return prefix + (prefix.length + encoded.length <= 180 ? encoded : createHash('sha256').update(name).digest('hex'))
+}
+
+export function directAgentId(agent: Pick<AgentEntry, 'name' | 'agentId'>): string {
+  return agent.agentId ? `direct:id:${agent.agentId}` : agentIdentity('direct', 'direct', agent.name)
+}
+
+export function directLegacyIds(agent: Pick<AgentEntry, 'legacyNames'>): string[] {
+  return (agent.legacyNames ?? []).map(name => agentIdentity('direct', 'direct', name))
 }
 
 export function envSecret(name?: string): string | undefined {

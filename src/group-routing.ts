@@ -1,17 +1,41 @@
 export const agentLabel = (name: string): string => name === 'story-assistant' ? '故事助手' : name
 
+/** Resolve display names by bound identity, never by a reused display name. */
+export function currentMemberName(members: readonly { id: string; name: string; previousIds?: readonly string[] }[] | undefined, id: string): string | undefined {
+  const exact = members?.find(member => member.id === id)
+  if (exact) return exact.name
+  let match: string | undefined
+  for (const member of members ?? []) {
+    if (!member.previousIds?.includes(id)) continue
+    if (match !== undefined) return undefined // Conflicting old bindings: retain the recorded label.
+    match = member.name
+  }
+  return match
+}
+
 export interface MentionMember { id: string; name: string; aliases?: readonly string[] }
 export type MemberRoute = { kind: 'main'; members: string[] }
   | { kind: 'direct'; member: string; text: string }
   | { kind: 'notice'; text: string }
 
 export function memberMentions(text: string, members: readonly MentionMember[]) {
-  const aliases = new Map<string, MentionMember>()
+  const aliases = new Map<string, MentionMember | null>()
   for (const member of members) {
-    aliases.set(member.id, member); aliases.set(member.name, member)
-    for (const alias of member.aliases ?? []) aliases.set(alias, member)
+    for (const alias of member.aliases ?? []) {
+      const prior = aliases.get(alias)
+      if (prior === undefined) aliases.set(alias, member)
+      else if (prior?.id !== member.id) aliases.set(alias, null)
+    }
   }
-  const names = [...aliases.keys()].filter(Boolean).sort((a, b) => b.length - a.length)
+  // A currently configured display name/ID beats a historical alias.
+  const display = new Map<string, MentionMember | null>()
+  for (const member of members) {
+    const prior = display.get(member.name)
+    display.set(member.name, prior === undefined || prior?.id === member.id ? member : null)
+  }
+  for (const [name, member] of display) aliases.set(name, member)
+  for (const member of members) aliases.set(member.id, member)
+  const names = [...aliases.keys()].filter(name => Boolean(name && aliases.get(name))).sort((a, b) => b.length - a.length)
   const found: { member: MentionMember; start: number; end: number }[] = []
   for (const match of text.matchAll(/@/gu)) {
     const start = match.index
@@ -22,15 +46,6 @@ export function memberMentions(text: string, members: readonly MentionMember[]) 
     if (name) found.push({ member: aliases.get(name)!, start, end: start + name.length + 1 })
   }
   return found
-}
-
-/** Only an explicit leading @ dispatch from the main Agent transfers this turn. */
-export function administratorDispatch(text: string, members: readonly MentionMember[]) {
-  const content = text.trim()
-  const first = memberMentions(content, members)[0]
-  if (!first || first.start !== 0) return
-  const task = content.slice(first.end).trim()
-  return task ? { member: first.member.id, text: task } : undefined
 }
 
 /** Member names work anywhere; native file/session references keep their meaning. */
