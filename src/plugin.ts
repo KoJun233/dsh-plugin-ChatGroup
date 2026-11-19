@@ -9,6 +9,7 @@ import { RegistryRpc, RegistrySettings } from './registry-settings.js'
 import { progressWriter } from './progress.js'
 import { GroupRpc, GroupRuntime, type GroupContext } from './group-runtime.js'
 import { isSuccess, needsInput } from './group.js'
+import { remotePeerProjection } from './peer-visibility-projection.js'
 
 export const name = 'a2a-client'
 export const inject = ['tools']
@@ -24,6 +25,9 @@ const output = {
 }
 
 export async function apply(ctx: Context, options: Config): Promise<void> {
+  ctx.inject(['sessionProjections'], async scope => {
+    await scope.sessionProjections.register(remotePeerProjection)
+  })
   const client = new A2AClient(parseConfig({}))
   const registry = new RegistrySettings(options.configFile, client)
   await registry.configuration()

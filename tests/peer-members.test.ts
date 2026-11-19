@@ -11,6 +11,7 @@ import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { PeerMembers } from '../src/peer-members.js'
 import type { A2AClient } from '../src/client.js'
 import type { AgUiRecord } from '../src/agui.js'
+import type { ConversationMember } from '../src/group.js'
 
 async function fixture() {
   let ctx = new Context()
@@ -23,13 +24,14 @@ async function fixture() {
   const agents = new Map<string, Agent>()
   ctx.provide('agents', { get: (id: string) => agents.get(id), list: () => [...agents.values()] })
   ctx.provide('llm', { registerAdapter(_providers: string[], value: LlmAdapter) { adapter = value } })
-  ctx.provide('sessions', { get: (id: string) => sessions.get(id) })
+  ctx.provide('sessions', { get: (id: string) => sessions.get(id), flush: async () => {} })
+  ctx.provide('workingDirectory', { get: () => '/workspace', set: async () => {} })
   // A local tool with the exact displayed name must never handle the remote call.
   ctx.tools.register(defineTool({ name: 'a2a.queryDocBlocks', description: 'Local execution sentinel', parameters: {},
     output: { schema: { type: 'json' }, render: () => [] },
     async execute() { localCalls++; return 'wrong local result' },
   }))
-  await ctx.plugin({ name: 'peer-test-services', inject: ['tools', 'agents', 'llm', 'sessions'],
+  await ctx.plugin({ name: 'peer-test-services', inject: ['tools', 'agents', 'llm', 'sessions', 'workingDirectory'],
     apply(scoped: Context) { ctx = scoped },
   })
   const send: A2AClient['send'] = async (_name, text, options) => {
@@ -46,8 +48,8 @@ async function fixture() {
     for (const event of events) options?.onTrace?.({ event, runId: 'run', threadId: 'thread' } as AgUiRecord)
     return { agent: 'backend', contextId: options?.contextId ?? 'thread', state: 'TASK_STATE_COMPLETED', text: '' }
   }
-  const enter = async (remote: boolean) => {
-    const session = Session.create(SessionId(crypto.randomUUID()))
+  const enter = async (remote: boolean, id = crypto.randomUUID() as string) => {
+    const session = Session.create(SessionId(id))
     if (remote) appendPluginRecord(session, 'plugin:dsh-a2a/remote', { agent: 'backend', contextId: 'thread' })
     sessions.set(session.id, session)
     const agent = { id: session.id, session } as Agent
@@ -98,5 +100,48 @@ for (const loadedBeforePlugin of [false, true]) test(`remote executor survives a
     await peer.detach()
     await new Promise(resolve => setImmediate(resolve))
     await assert.rejects(f.local(peer.agent), ToolExecutorUnavailableError, 'peer disposal removes its scoped executor')
+  } finally { await f.close(peers) }
+})
+
+test('remote peers keep ordinary history routing and reuse their saved root handle', async () => {
+  const f = await fixture()
+  const peers = new PeerMembers(f.ctx, f.client)
+  const created: Parameters<typeof f.ctx.agents.create>[0][] = []
+  const resumed: string[] = []
+  const room = (await f.enter(false)).agent
+  Object.assign(room, { model: { current: () => ({ provider: 'local', model: 'model' }) } })
+  const remote: ConversationMember = { kind: 'remote', id: 'remote:backend', name: 'backend', description: '', remoteName: 'backend' }
+  const local: ConversationMember = { kind: 'local', id: 'local:helper', name: 'helper', description: '', presetId: 'helper' }
+  // Exercise the real open/reuse path without running an Agent loop.
+  Object.assign(f.ctx.agents, {
+    async create(options: Parameters<typeof f.ctx.agents.create>[0]) {
+      created.push(options)
+      const { agent } = await f.enter(false, options.sessionId)
+      return { agent, dispose: async () => {} }
+    },
+    async resume(options: Parameters<typeof f.ctx.agents.resume>[0]) {
+      resumed.push(options.resumeSessionId)
+      const { agent } = await f.enter(false, options.resumeSessionId)
+      return { agent, dispose: async () => {} }
+    },
+  })
+  const open = (member: ConversationMember, save = async (_member: ConversationMember) => {}) =>
+    Reflect.get(peers, 'open').call(peers, room, member, new AbortController().signal, save)
+  try {
+    let saved: ConversationMember | undefined
+    const first = await open(remote, async member => { saved = member })
+    assert.equal(created[0].meta?.origin, undefined, 'presentation filtering must not change the ordinary history route')
+    assert.equal(created[0].meta?.parentSession, undefined, 'classification does not make a native subagent address')
+    assert.equal(created[0].meta?.delegationDepth, undefined, 'classification does not alter execution recursion depth')
+    assert.equal(created[0].meta?.cwd, '/workspace')
+    assert.deepEqual(created[0].agentOptions, { provider: 'dsh-a2a', model: 'remote' })
+    assert.equal((await open(saved!)).agent, first.agent)
+    assert.equal(created.length, 1, 'subsequent turns reuse the saved peer instead of creating a session per message')
+    await open(local)
+    assert.equal(created[1].meta?.origin, undefined, 'local member behavior is unchanged')
+    assert.equal(created[1].meta?.agentPreset, 'helper')
+    await open({ ...remote, sessionId: 'persisted-peer' })
+    assert.deepEqual(resumed, ['persisted-peer'], 'existing histories resume in place without rewriting their immutable header')
+    assert.equal(created.length, 2)
   } finally { await f.close(peers) }
 })

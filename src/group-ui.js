@@ -2,9 +2,11 @@ import { groupRemote } from './group-contract.js'
 import { agentLabel, memberMentions } from './group-routing.js'
 import { nativeUi } from './native-ui.js'
 import { registerGroupTrajectory } from './group-trajectory-ui.js'
+import { registerPeerVisibility } from './peer-visibility-ui.js'
+import { settingAction, settingIcon } from './settings-ui.js'
 
 export function groupClient(require) {
-  const { createElement: h, createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useMemo } = require('react')
+  const { createElement: h, createContext, useContext, useCallback, useState, useEffect, useLayoutEffect, useRef, useMemo } = require('react')
   const { Button, MenuItemButton } = require('@deepseek-ai/dsh-client-ui-primitives')
   const { Markdown } = nativeUi(require)
   const target = 'dsh-a2a-members'
@@ -15,12 +17,16 @@ export function groupClient(require) {
   const memberEvents = {
     kind: 'dsh-a2a-member-answer', target: 'chat',
     match: event => { const m = read(event); return m?.kind === 'message' && m.role === 'member' ? { id: m.id, role: m.order === m.revision ? 'start' : 'update' } : null },
-    start: (_ctx, match) => read(match.event),
-    update: (ctx, match) => { const m = read(match.event); return m && m.revision > ctx.state.revision ? m : ctx.state },
+    start: (_ctx, match) => ({ message: read(match.event), replySeq: match.event.seq }),
+    update: (ctx, match) => {
+      const message = read(match.event)
+      return message && message.revision > ctx.state.message.revision ? { message, replySeq: match.event.seq } : ctx.state
+    },
     buildViewNode: ctx => {
       const first = ctx.start ?? ctx.matches[0]
-      return { key: ctx.key, kind: 'dsh-a2a-member-answer', id: ctx.state.id, target: 'chat', anchorSeq: first.event.seq,
-        location: first.location, visibility: 'visible', groupTree: 'turn', data: ctx.state }
+      const { message, replySeq } = ctx.state
+      return { key: ctx.key, kind: 'dsh-a2a-member-answer', id: message.id, target: 'chat', anchorSeq: first.event.seq,
+        location: first.location, visibility: 'visible', groupTree: 'turn', data: { ...message, replySeq } }
     },
   }
   const rosterEvents = {
@@ -72,13 +78,19 @@ export function groupClient(require) {
 
   const peerSlot = 'dsh-a2a.peer-answer'
   const peerFlow = 'dsh-a2a.peer-flow'
-  function MemberAnswer({ node, SessionProvider, renderSlot, retainPeer, watchPeers }) {
+  function MemberAnswer({ node, SessionProvider, renderSlot, retainPeer, watchPeers, forkAt }) {
     const message = node.data
     const name = message.authorName || agentLabel(message.author)
     const [ready, setReady] = useState(null)
     const [error, setError] = useState('')
     const peer = message.peer
-    const legacyId = !peer && message.author.startsWith('local:') ? message.childSessionId ?? message.contextId : undefined
+    const local = message.author.startsWith('local:')
+    const { replySeq } = message
+    // The peer's turn/end seq only addresses its execution log. Cut the room
+    // log at the revision that actually recorded this reply instead.
+    const branchRoom = useCallback(() => forkAt(replySeq), [forkAt, replySeq])
+    const forkRoom = local ? undefined : message.state !== 'working' && Number.isSafeInteger(replySeq) && typeof forkAt === 'function' ? branchRoom : null
+    const legacyId = !peer && local ? message.childSessionId ?? message.contextId : undefined
     const peerId = peer?.sessionId ?? legacyId
     useEffect(() => {
       setReady(null); setError('')
@@ -108,13 +120,13 @@ export function groupClient(require) {
     return h(SignedReply, { name, kind: 'member', className: 'a2am-answer', 'data-member-answer': message.id, 'data-state': message.state,
       'data-peer-session': peerId, 'data-peer-turn': peer?.turn },
       ready?.sessionId === peerId && peerId ? h(MemberReplyContext.Provider, { value: true }, h(SessionProvider, { session: ready },
-        renderSlot(peerSlot, { requestedTurn: peer?.turn, legacyTime: message.createdAt, legacyText: message.text }))) : h('div', { 'data-native-markdown': true },
+        renderSlot(peerSlot, { requestedTurn: peer?.turn, legacyTime: message.createdAt, legacyText: message.text, forkRoom }))) : h('div', { 'data-native-markdown': true },
         message.text ? h(Markdown, { text: message.text, streaming: message.state === 'working' })
           : h('span', { className: 'a2am-muted', role: 'status' }, message.state === 'working' ? '正在连接…' : message.state === 'canceled' ? '任务已停止。' : '未收到文字回复。')),
       !peer && !ready && message.text && message.state !== 'working' ? h(Button, { size: 'sm', onClick: () => navigator.clipboard.writeText(message.text), 'aria-label': '复制历史回复' }, '复制') : null,
       error ? h('p', { className: 'a2am-error', role: 'status' }, '原生会话加载失败：', error) : null)
   }
-  function PeerAnswer({ requestedTurn, legacyTime, legacyText, renderSlot, useChat, useSessions, sessionId, openFile, forkAt, loadImage, inspectCall }) {
+  function PeerAnswer({ requestedTurn, legacyTime, legacyText, forkRoom, renderSlot, useChat, useSessions, sessionId, openFile, forkAt, loadImage, inspectCall }) {
     const order = useChat(s => s.order)
     const store = useChat(s => s.nodes)
     const cwd = useSessions(s => s.byId[sessionId]?.cwd)
@@ -126,15 +138,17 @@ export function groupClient(require) {
       const matches = candidates.filter(candidate => candidate.text.trim() === legacyText.trim())
       return (matches.length ? matches : candidates).sort((a, b) => Math.abs((a.turn?.start?.time ?? 0) - time) - Math.abs((b.turn?.start?.time ?? 0) - time))[0]?.turn?.turn
     }, [requestedTurn, legacyTime, legacyText, order, store])
+    // A remote tail can arrive before the room has committed the final reply.
+    const tailReady = forkRoom !== null
     const entries = useMemo(() => order.flatMap(key => {
       const node = store.get(key)
       const location = node?.location
       const turn = location?.kind === 'turn' || location?.kind === 'step' ? location.turn.turn : undefined
-      return turn === effectiveTurn && !['user', 'turn-trigger', 'system-prompt', 'context'].includes(node.kind) ? [{ kind: 'node', key }] : []
-    }), [order, store, effectiveTurn])
+      return node && turn === effectiveTurn && (tailReady || node.kind !== 'turn-tail') && !['user', 'turn-trigger', 'system-prompt', 'context'].includes(node.kind) ? [{ kind: 'node', key }] : []
+    }), [order, store, effectiveTurn, tailReady])
     return h('div', { className: 'a2am-native-flow', 'data-native-peer-flow': sessionId }, renderSlot(peerFlow, {
       entries, pendingInputs: [], lastInputTurn: effectiveTurn, deferCollapse: false,
-      cwd, openFile, forkAt, loadImage, inspectCall, requestedTurn: effectiveTurn,
+      cwd, openFile, forkAt: forkRoom === undefined ? forkAt : forkRoom, loadImage, inspectCall, requestedTurn: effectiveTurn,
     }, { hookContext: {} }))
   }
   function SettingsBody({ sessionId, api, useA2aMembers, useSession, useTabInfo, openThread }) {
@@ -143,13 +157,22 @@ export function groupClient(require) {
     const running = useSession(value => value.running)
     const [state, setState] = useState(null)
     const [error, setError] = useState('')
-    const [pending, setPending] = useState(false)
+    const [pending, setPending] = useState(null)
+    const [refreshing, setRefreshing] = useState(true)
     const [query, setQuery] = useState('')
+    const [kindFilter, setKindFilter] = useState('all')
     const [adding, setAdding] = useState(false)
+    const [notice, setNotice] = useState('')
     const active = useRef(true)
+    const search = useRef(null)
+    const addButton = useRef(null)
+    const errorRef = useRef(null)
+    const focusAfterChange = useRef(null)
     const refresh = async signal => {
-      try { const value = await api('state', sessionId, [], signal); if (active.current) { setState(value); setError('') } }
+      setRefreshing(true)
+      try { const value = await api('state', sessionId, [], signal); if (active.current && !signal?.aborted) { setState(value); setError('') } }
       catch (e) { if (active.current && !signal?.aborted) setError(e.message) }
+      finally { if (active.current && !signal?.aborted) setRefreshing(false) }
     }
     useEffect(() => {
       active.current = true
@@ -157,39 +180,79 @@ export function groupClient(require) {
       void refresh(AbortSignal.any([controller.signal, tab.signal]))
       return () => { active.current = false; controller.abort() }
     }, [sessionId, tab.signal])
+    useEffect(() => { if (adding) search.current?.focus() }, [adding])
+    useEffect(() => { if (error) errorRef.current?.focus() }, [error])
+    useEffect(() => {
+      if (pending || !focusAfterChange.current) return
+      if (focusAfterChange.current === 'add' && adding) search.current?.focus({ preventScroll: true })
+      else addButton.current?.querySelector('button')?.focus({ preventScroll: true })
+      focusAfterChange.current = null
+    }, [pending, adding])
     const members = roster?.members ?? state?.members ?? []
-    const busy = pending || running
-    const change = async (method, args) => {
-      setPending(true); setError('')
+    const busy = Boolean(pending || running)
+    const icon = (name, size) => settingIcon(h, name, size)
+    const action = (label, name, props) => settingAction(h, label, name, props)
+    const change = async (method, item) => {
+      const add = method === 'addMember'
+      const args = add ? [{ kind: item.kind, id: item.id }] : [item.id]
+      setPending(item.id); setError(''); setNotice('')
       try {
         const result = await api(method, sessionId, args, tab.signal)
-        if (active.current) setState(old => ({ ...old, members: result.members }))
+        if (active.current && !tab.signal.aborted) {
+          setState(old => ({ ...old, members: result.members }))
+          setNotice(add ? `已加入 ${item.name}` : `已移除 ${item.name}`)
+          focusAfterChange.current = add ? 'add' : 'remove'
+        }
       } catch (e) { if (active.current && !tab.signal.aborted) setError(e.message) }
-      finally { if (active.current) setPending(false) }
+      finally { if (active.current && !tab.signal.aborted) setPending(null) }
     }
-    const candidates = state?.agents?.filter(a => !members.some(m => m.id === a.id) && (!query || `${a.name} ${a.description}`.toLowerCase().includes(query.toLowerCase()))) ?? []
-    return h('section', { className: 'a2am-settings', 'data-session-members': sessionId },
-      h('div', { className: 'a2am-section-title' }, '顾问'),
-      h('div', { className: 'a2am-main-agent' }, h('strong', null, '当前会话 Agent'), h('p', { className: 'a2am-muted' }, '未 @成员 的消息由它回答或协调。')),
-      h('div', { className: 'a2am-section-heading' }, h('span', { className: 'a2am-section-title' }, `会话成员${members.length ? ` · ${members.length}` : ''}`),
-        h(Button, { size: 'sm', disabled: !state || busy, onClick: () => setAdding(value => !value), 'aria-expanded': adding }, adding ? '完成' : '添加 Agent')),
-      !state && !error ? h('p', { className: 'a2am-muted', role: 'status' }, '正在加载成员…') : null,
-      !members.length && state ? h('p', { className: 'a2am-muted a2am-empty' }, '添加本地或远端 Agent，即可在当前会话中 @它。') : null,
-      members.map(member => h('div', { className: 'a2am-member', key: member.id, 'data-member-id': member.id },
-        h('div', { className: 'a2am-member-info' }, h('strong', null, member.name), h('span', { className: 'a2am-muted' }, member.kind === 'local' ? '本地 Agent' : '远端 A2A'),
-          member.description ? h('p', { className: 'a2am-muted' }, member.description) : null,
-          member.sessionId || (member.kind === 'local' && member.childSessionId) ? h(Button, { size: 'sm', onClick: () => openThread(member.sessionId ?? member.childSessionId) }, '查看对话') : null),
-        h(Button, { size: 'sm', disabled: busy, 'aria-label': `移除${member.name}`, onClick: () => void change('removeMember', [member.id]) }, '移除'))),
+    const normalized = query.trim().toLowerCase()
+    const directory = state?.agents?.filter(a => !members.some(m => m.id === a.id)) ?? []
+    const mixedKinds = directory.some(a => a.kind === 'local') && directory.some(a => a.kind === 'remote')
+    const candidates = directory.filter(a => (!mixedKinds || kindFilter === 'all' || a.kind === kindFilter) &&
+      (!normalized || `${a.name} ${a.description ?? ''}`.toLowerCase().includes(normalized)))
+    const kindLabel = kind => kind === 'local' ? '本地 Agent' : '远端 A2A'
+    const kindTile = kind => h('span', { className: 'a2a-tile', 'data-kind': kind === 'remote' ? 'network' : 'card',
+      title: kindLabel(kind), role: 'img', 'aria-label': kindLabel(kind) }, icon(kind === 'remote' ? 'network' : 'card'))
+    const description = text => text ? h('p', { className: 'a2am-muted a2am-member-summary', title: text }, text) : null
+    const toggleAdding = () => {
+      if (adding) { setAdding(false); return }
+      setQuery(''); setKindFilter('all'); setAdding(true)
+    }
+    return h('section', { className: 'a2am-settings a2a-surface', 'data-session-members': sessionId },
+      h('header', { className: 'a2am-section-heading' }, h('h2', null, '会话成员', members.length ? h('span', { className: 'a2a-count' }, members.length) : null),
+        h('span', { ref: addButton }, h(Button, { size: 'sm', className: 'a2a-outline', disabled: !adding && (!state || busy),
+          title: !adding && running ? '会话运行中，结束后可增减成员' : undefined, onClick: toggleAdding, 'aria-expanded': adding },
+          adding ? null : icon('plus', 14), adding ? '完成' : '添加 Agent'))),
+      h('div', { className: 'a2am-adviser' }, h('span', { className: 'a2a-tile', 'data-kind': 'network', 'aria-hidden': true }, adviserIcon),
+        h('div', { className: 'a2am-member-info' }, h('strong', null, '顾问')),
+        h('span', { className: 'a2am-default', role: 'status', title: running ? '会话结束后可增减成员' : '未 @ 成员时，由顾问回答或协调' }, running ? '会话运行中' : '默认接收')),
+      h('span', { className: 'a2a-sr-only', 'aria-live': 'polite' }, notice),
+      !state && !error ? h('p', { className: 'a2am-muted a2a-empty', role: 'status' }, '正在加载…') : null,
+      members.length ? h('div', { className: 'a2am-roster' }, members.map(member => h('div', { className: 'a2am-member', key: member.id, 'data-member-id': member.id },
+        kindTile(member.kind), h('div', { className: 'a2am-member-info' }, h('strong', { title: member.name }, member.name), description(member.description)),
+        h('div', { className: 'a2am-member-actions' },
+          member.sessionId || (member.kind === 'local' && member.childSessionId) ? action(`查看对话：${member.name}`, 'chat', { onClick: () => openThread(member.sessionId ?? member.childSessionId) }) : null,
+          action(`移除${member.name}`, pending === member.id ? 'wait' : 'remove', { className: 'a2a-remove', disabled: busy,
+            'aria-busy': pending === member.id, onClick: () => void change('removeMember', member) }))))) : null,
+      state?.discoveryError ? h('p', { className: 'a2am-muted a2ar-feedback', role: 'status' }, state.discoveryError) : null,
+      error ? h('div', { ref: errorRef, tabIndex: -1, className: 'a2am-error a2ar-feedback', role: 'alert' }, error,
+        h(Button, { size: 'sm', disabled: refreshing, onClick: () => void refresh(tab.signal) }, '刷新列表')) : null,
       adding ? h('div', { className: 'a2am-add', 'aria-label': '添加会话成员' },
-        h('div', { className: 'a2am-search-row' }, h('input', { className: 'a2am-search', type: 'search', value: query, placeholder: '搜索 Agent', 'aria-label': '搜索 Agent', onChange: event => setQuery(event.target.value) }),
-          h(Button, { size: 'sm', disabled: pending, onClick: () => void refresh(tab.signal) }, '刷新')),
-        ['local', 'remote'].map(kind => h('div', { key: kind }, h('div', { className: 'a2am-section-title a2am-kind' }, kind === 'local' ? '本地 Agent 预设' : '远端 A2A'),
-          candidates.filter(a => a.kind === kind).map(a => h('div', { className: 'a2am-member', key: a.id },
-            h('div', { className: 'a2am-member-info' }, h('strong', null, a.name), h('p', { className: 'a2am-muted' }, a.unavailable || a.description || (kind === 'local' ? '在本会话中独立运行' : 'A2A Agent'))),
-            h(Button, { size: 'sm', disabled: busy || Boolean(a.unavailable), 'aria-label': `添加${a.name}`, onClick: () => void change('addMember', [{ kind: a.kind, id: a.id }]) }, '添加'))),
-          !candidates.some(a => a.kind === kind) ? h('p', { className: 'a2am-muted' }, query ? '没有匹配的 Agent' : '暂无可添加的 Agent') : null))) : null,
-      state?.discoveryError ? h('p', { className: 'a2am-muted', role: 'status' }, state.discoveryError) : null,
-      error ? h('p', { className: 'a2am-error', role: 'alert' }, error, ' ', h(Button, { size: 'sm', onClick: () => void refresh(tab.signal) }, '重试')) : null)
+        h('div', { className: 'a2am-directory-tools' },
+          h('div', { className: 'a2am-search-row' }, h('label', { className: 'a2a-search-wrap' }, icon('search'),
+            h('input', { ref: search, className: 'a2am-search', type: 'search', value: query, placeholder: '搜索 Agent', 'aria-label': '搜索 Agent', onChange: event => setQuery(event.target.value) })),
+            action(refreshing ? '刷新中' : '刷新', refreshing ? 'wait' : 'refresh', { disabled: Boolean(pending) || refreshing, 'aria-busy': refreshing, onClick: () => void refresh(tab.signal) })),
+          mixedKinds ?
+            h('div', { className: 'a2a-segment', role: 'group', 'aria-label': '筛选 Agent 类型' },
+              [['all', '全部'], ['local', '本地'], ['remote', '远端']].map(([kind, label]) => h('button', { key: kind, type: 'button', 'aria-pressed': kindFilter === kind, onClick: () => setKindFilter(kind) }, label))) : null),
+        h('div', { className: 'a2am-directory-list', 'aria-busy': refreshing },
+          candidates.map(a => h('div', { className: 'a2am-member', key: a.id }, kindTile(a.kind),
+            h('div', { className: 'a2am-member-info' }, h('strong', { title: a.name }, a.name),
+              a.unavailable ? h('p', { className: 'a2am-error a2am-muted' }, a.unavailable) : description(a.description)),
+            action(`添加${a.name}`, pending === a.id ? 'wait' : 'plus', { className: 'a2a-add-member', disabled: busy || Boolean(a.unavailable),
+              'aria-busy': pending === a.id, onClick: () => void change('addMember', a) }))),
+          !candidates.length ? h('p', { className: 'a2am-muted a2a-empty', role: 'status' }, normalized ? '没有匹配的 Agent' : '暂无可添加的 Agent') : null)) : null)
   }
   function SettingsMenuItem({ onDismiss, openSettings }) {
     return h(MenuItemButton, { separatorBefore: true, onSelect: () => { onDismiss(); openSettings() } }, '会话设置')
@@ -236,6 +299,7 @@ export function groupClient(require) {
           return () => { childDisposers.toReversed().forEach(dispose => dispose()); disposeEntry() }
         }
         registerGroupTrajectory(ctx, require, nativeEntry, read)
+        registerPeerVisibility(ctx, require, nativeEntry)
         ctx.uiConversation.events.register(memberEvents)
         ctx.uiConversation.events.register(rosterEvents)
         ctx.uiConversation.views.register(rosterView)
@@ -270,7 +334,7 @@ export function groupClient(require) {
           return { empty: null, replace: ({ nodes }) => { value = null; return latest(nodes) }, apply: ({ upserts }) => latest(upserts) }
         } })
         // Reuse the shipped flow and all of its node renderers in the actual
-        // peer SessionProvider: feedback and branch actions keep their identity.
+        // peer SessionProvider: feedback keeps its identity; remote branches use the room.
         ctx.effect(() => {
           const disposers = []; let installed = false
           const install = () => {
@@ -318,11 +382,17 @@ export function groupClient(require) {
           let closed = false, scheduled = false
           const install = () => {
             if (closed) return
-            for (const key of ['assistant-step', 'user', 'steering', 'turn-process']) {
+            for (const key of ['assistant-step', 'user', 'steering', 'turn-process', 'context']) {
               if (installed.has(key)) continue
               const original = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === key)
               if (!original) continue
               installed.add(key)
+              if (key === 'context') {
+                // Hide only legacy recalls: the original signed reply is already on screen.
+                disposers.push(nativeEntry('conversation.chat.node', original, { key, priority: -10 }, (Original, props) =>
+                  props.node.data.source?.kind === 'dsh-a2a/member-reply' ? null : h(Original, props)))
+                continue
+              }
               const decorate = (Original, props) => {
                 const insideMemberReply = useContext(MemberReplyContext)
                 const roster = props.useA2aMembers(value => value)
